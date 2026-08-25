@@ -1,0 +1,146 @@
+#!/usr/bin/env python
+"""Generate audit report from pre-computed stats."""
+import pandas as pd
+import numpy as np
+from pathlib import Path
+
+OUTPUT_DIR = Path("enhanced/experiments")
+
+patient_stats = pd.read_csv(OUTPUT_DIR / "patient_stats.csv")
+var_stats = pd.read_csv(OUTPUT_DIR / "variable_stats.csv")
+
+# Load raw data for hourly sepsis rate
+df = pd.read_parquet(OUTPUT_DIR / "raw_combined.parquet")
+
+total_patients = len(patient_stats)
+total_hours = len(df)
+sepsis_patients = patient_stats['sepsis_label'].sum()
+sepsis_rate = sepsis_patients / total_patients * 100
+
+# ICU stay length stats
+icu_stats = patient_stats['n_hours'].describe()
+
+# Missingness stats
+miss_stats = patient_stats['missingness_pct'].describe()
+
+# Class balance per hour
+hourly_sepsis = df.groupby('ICULOS')['SepsisLabel'].mean().reset_index()
+hourly_sepsis.columns = ['ICULOS', 'sepsis_rate']
+
+# Sepsis onset timing
+sepsis_patients_df = patient_stats[patient_stats['sepsis_label'] == 1]
+if len(sepsis_patients_df) > 0:
+    onset_stats = sepsis_patients_df['first_sepsis_hour'].describe()
+else:
+    onset_stats = None
+
+report = f"""# PhysioNet 2019 Sepsis Data Audit Report
+
+## Dataset Overview
+- **Total Patients**: {total_patients:,}
+- **Total Hourly Records**: {total_hours:,}
+- **Sepsis-Positive Patients**: {int(sepsis_patients):,} ({sepsis_rate:.2f}%)
+- **Sepsis-Negative Patients**: {int(total_patients - sepsis_patients):,} ({100 - sepsis_rate:.2f}%)
+
+## ICU Stay Length Distribution
+| Statistic | Value (hours) |
+|-----------|---------------|
+| Count | {int(icu_stats['count']):,} |
+| Mean | {icu_stats['mean']:.1f} |
+| Std | {icu_stats['std']:.1f} |
+| Min | {int(icu_stats['min']):,} |
+| 25% | {int(icu_stats['25%']):,} |
+| 50% (Median) | {int(icu_stats['50%']):,} |
+| 75% | {int(icu_stats['75%']):,} |
+| Max | {int(icu_stats['max']):,} |
+
+## Patient-Level Missingness Distribution
+| Statistic | Value (%) |
+|-----------|-----------|
+| Mean | {miss_stats['mean']:.1f} |
+| Std | {miss_stats['std']:.1f} |
+| Min | {miss_stats['min']:.1f} |
+| 25% | {miss_stats['25%']:.1f} |
+| 50% (Median) | {miss_stats['50%']:.1f} |
+| 75% | {miss_stats['75%']:.1f} |
+| Max | {miss_stats['max']:.1f} |
+
+## Sepsis Onset Timing (Sepsis-Positive Patients Only)
+"""
+if onset_stats is not None:
+    report += f"""| Statistic | Value (hours) |
+|-----------|---------------|
+| Count | {int(onset_stats['count']):,} |
+| Mean | {onset_stats['mean']:.1f} |
+| Std | {onset_stats['std']:.1f} |
+| Min | {int(onset_stats['min']):,} |
+| 25% | {int(onset_stats['25%']):,} |
+| 50% (Median) | {int(onset_stats['50%']):,} |
+| 75% | {int(onset_stats['75%']):,} |
+| Max | {int(onset_stats['max']):,} |
+"""
+
+report += f"""
+## Variable-Level Missingness (Top 20 Most Missing)
+"""
+top_missing = var_stats.nlargest(20, 'pct_missing')[['variable', 'pct_missing', 'mean', 'median']]
+report += top_missing.to_markdown(index=False)
+
+report += f"""
+
+## Variable-Level Missingness (Least Missing - Fully Observed)
+"""
+least_missing = var_stats.nsmallest(10, 'pct_missing')[['variable', 'pct_missing', 'mean', 'median']]
+report += least_missing.to_markdown(index=False)
+
+report += f"""
+
+## Key Clinical Variables Summary Statistics
+"""
+key_vars = ['HR', 'MAP', 'Lactate', 'Temp', 'Resp', 'O2Sat', 'WBC', 'Creatinine',
+            'Platelets', 'Bilirubin_total', 'Glucose', 'Age', 'Gender']
+key_stats = var_stats[var_stats['variable'].isin(key_vars)][
+    ['variable', 'pct_missing', 'mean', 'std', 'median', 'min', 'max']
+]
+report += key_stats.to_markdown(index=False)
+
+report += f"""
+
+## Hourly Sepsis Rate (Class Balance Over Time)
+| ICULOS (hour) | Sepsis Rate |
+|---------------|-------------|
+"""
+for _, row in hourly_sepsis.head(30).iterrows():
+    report += f"| {int(row['ICULOS']):>3} | {row['sepsis_rate']:.4f} |\n"
+
+if len(hourly_sepsis) > 30:
+    report += "| ... | ... |\n"
+    for _, row in hourly_sepsis.tail(5).iterrows():
+        report += f"| {int(row['ICULOS']):>3} | {row['sepsis_rate']:.4f} |\n"
+
+report += f"""
+
+## Data Quality Observations
+1. **High Missingness**: Most lab variables have >80% missing values
+2. **Vitals More Complete**: HR, O2Sat, SBP, MAP, DBP, Resp have lower missingness
+3. **Static Variables**: Age, Gender, Unit1, Unit2, HospAdmTime are constant per patient
+4. **Class Imbalance**: Sepsis rate ~{sepsis_rate:.1f}% - highly imbalanced
+5. **Temporal Pattern**: Sepsis rate increases with ICU hours (expected)
+6. **ICU Stay**: Median stay ~{int(icu_stats['50%'])} hours, max {int(icu_stats['max'])} hours
+
+## Recommendations for Preprocessing
+1. **Imputation Strategy**: Use MICE/KNN/MissForest benchmark; vitals vs labs may need different approaches
+2. **Outlier Handling**: IQR capping (1.5×IQR) fitted on training patients only
+3. **Normalization**: RobustScaler for skewed lab distributions; StandardScaler for vitals
+4. **Feature Engineering**: Focus on variables with <50% missingness for temporal features
+5. **Patient-Level Split**: Ensure no patient appears in multiple splits
+
+---
+*Generated by enhanced/data/generate_report.py*
+"""
+
+report_path = OUTPUT_DIR / "audit_report.md"
+with open(report_path, 'w') as f:
+    f.write(report)
+
+print(f"✓ Report generated: {report_path}")

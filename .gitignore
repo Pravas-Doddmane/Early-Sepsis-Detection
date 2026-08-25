@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+.env.*
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Node
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+
+# Build
+dist/
+build/
+.vite/
+
+# Logs
+*.log
+
+# Raw dataset
+dataset/
+
+# Generated / processed datasets
+enhanced/data/processed/
+enhanced/experiments/*.parquet
+
+# Generated experiment artifacts
+enhanced/experiments/*.csv
+
+# Generated ML transformers
+enhanced/models/transformers/
