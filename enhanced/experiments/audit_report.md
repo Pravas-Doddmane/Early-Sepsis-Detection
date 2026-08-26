@@ -1,15 +1,15 @@
 # PhysioNet 2019 Sepsis Data Audit Report
 
 ## Dataset Overview
-- **Total Patients**: 40336
-- **Total Hourly Records**: 1552210
-- **Sepsis-Positive Patients**: 2932 (7.27%)
-- **Sepsis-Negative Patients**: 37404 (92.73%)
+- **Total Patients**: 40,336
+- **Total Hourly Records**: 1,552,210
+- **Sepsis-Positive Patients**: 2,932 (7.27%)
+- **Sepsis-Negative Patients**: 37,404 (92.73%)
 
 ## ICU Stay Length Distribution
 | Statistic | Value (hours) |
 |-----------|---------------|
-| Count | 40336 |
+| Count | 40,336 |
 | Mean | 38.5 |
 | Std | 22.8 |
 | Min | 8 |
@@ -19,7 +19,7 @@
 | Max | 336 |
 
 ## Patient-Level Missingness Distribution
-| Statistic | Value (%%%) |
+| Statistic | Value (%) |
 |-----------|-----------|
 | Mean | 68.6 |
 | Std | 5.2 |
@@ -32,7 +32,7 @@
 ## Sepsis Onset Timing (Sepsis-Positive Patients Only)
 | Statistic | Value (hours) |
 |-----------|---------------|
-| Count | 2932 |
+| Count | 2,932 |
 | Mean | 50.9 |
 | Std | 59.4 |
 | Min | 1 |
@@ -42,59 +42,59 @@
 | Max | 331 |
 
 ## Variable-Level Missingness (Top 20 Most Missing)
-| variable | pct_missing | mean | median |
-|----------|-------------|------|--------|
-| Bilirubin_direct | 99.8 | 1.84 | 0.45 |
-| Fibrinogen | 99.3 | 287.39 | 250.00 |
-| TroponinI | 99.0 | 8.29 | 0.30 |
-| Bilirubin_total | 98.5 | 2.11 | 0.90 |
-| Alkalinephos | 98.4 | 102.48 | 74.00 |
-| AST | 98.4 | 260.22 | 41.00 |
-| Lactate | 97.3 | 2.65 | 1.80 |
-| PTT | 97.1 | 41.23 | 32.40 |
-| SaO2 | 96.5 | 92.65 | 97.00 |
-| EtCO2 | 96.3 | 32.96 | 33.00 |
-| Phosphate | 96.0 | 3.54 | 3.30 |
-| HCO3 | 95.8 | 24.08 | 24.00 |
-| Chloride | 95.5 | 105.83 | 106.00 |
-| BaseExcess | 94.6 | -0.69 | 0.00 |
-| PaCO2 | 94.4 | 41.02 | 40.00 |
-| Calcium | 94.1 | 7.56 | 8.30 |
-| Platelets | 94.1 | 196.01 | 181.00 |
-| Creatinine | 93.9 | 1.51 | 0.94 |
-| Magnesium | 93.7 | 2.05 | 2.00 |
-| WBC | 93.6 | 11.45 | 10.30 |
+| variable         |   pct_missing |       mean |   median |
+|:-----------------|--------------:|-----------:|---------:|
+| Bilirubin_direct |       99.8074 |   1.83618  |    0.445 |
+| Fibrinogen       |       99.3402 | 287.386    |  250     |
+| TroponinI        |       99.0477 |   8.2901   |    0.3   |
+| Bilirubin_total  |       98.5092 |   2.11406  |    0.9   |
+| Alkalinephos     |       98.3932 | 102.484    |   74     |
+| AST              |       98.3776 | 260.223    |   41     |
+| Lactate          |       97.3299 |   2.64667  |    1.8   |
+| PTT              |       97.0559 |  41.2312   |   32.4   |
+| SaO2             |       96.5494 |  92.6542   |   97     |
+| EtCO2            |       96.2868 |  32.9577   |   33     |
+| Phosphate        |       95.9863 |   3.54424  |    3.3   |
+| HCO3             |       95.8106 |  24.0755   |   24     |
+| Chloride         |       95.4603 | 105.828    |  106     |
+| BaseExcess       |       94.579  |  -0.689919 |    0     |
+| PaCO2            |       94.4401 |  41.0219   |   40     |
+| Calcium          |       94.1161 |   7.55753  |    8.3   |
+| Platelets        |       94.0595 | 196.014    |  181     |
+| Creatinine       |       93.9044 |   1.5107   |    0.94  |
+| Magnesium        |       93.6896 |   2.05145  |    2     |
+| WBC              |       93.5932 |  11.4464   |   10.3   |
 
 ## Variable-Level Missingness (Least Missing - Fully Observed)
-| variable | pct_missing | mean | median |
-|----------|-------------|------|--------|
-| Age | 0.0 | 62.01 | 64.00 |
-| Gender | 0.0 | 0.56 | 1.00 |
-| ICULOS | 0.0 | 26.99 | 21.00 |
-| SepsisLabel | 0.0 | 0.02 | 0.00 |
-| HospAdmTime | 0.0 | -56.13 | -6.03 |
-| HR | 9.9 | 84.58 | 83.50 |
-| MAP | 12.5 | 82.40 | 80.00 |
-| O2Sat | 13.1 | 97.19 | 98.00 |
-| SBP | 14.6 | 123.75 | 121.00 |
-| Resp | 15.4 | 18.73 | 18.00 |
+| variable    |   pct_missing |        mean |   median |
+|:------------|--------------:|------------:|---------:|
+| Age         |   0           |  62.0095    |    64    |
+| Gender      |   0           |   0.559269  |     1    |
+| ICULOS      |   0           |  26.995     |    21    |
+| SepsisLabel |   0           |   0.0179847 |     0    |
+| HospAdmTime |   0.000515394 | -56.1251    |    -6.03 |
+| HR          |   9.88262     |  84.5814    |    83.5  |
+| MAP         |  12.4513      |  82.4001    |    80    |
+| O2Sat       |  13.0611      |  97.194     |    98    |
+| SBP         |  14.577       | 123.75      |   121    |
+| Resp        |  15.3546      |  18.7265    |    18    |
 
 ## Key Clinical Variables Summary Statistics
-| variable | pct_missing | mean | std | median | min | max |
-|----------|-------------|------|-----|--------|-----|-----|
-| HR | 9.9 | 84.58 | 17.33 | 83.50 | 20.00 | 280.00 |
-| O2Sat | 13.1 | 97.19 | 2.94 | 98.00 | 20.00 | 100.00 |
-| Temp | 66.2 | 36.98 | 0.77 | 37.00 | 20.90 | 50.00 |
-| MAP | 12.5 | 82.40 | 16.34 | 80.00 | 20.00 | 300.00 |
-| Resp | 15.4 | 18.73 | 5.10 | 18.00 | 1.00 | 100.00 |
-| Creatinine | 93.9 | 1.51 | 1.81 | 0.94 | 0.10 | 46.60 |
-| Glucose | 82.9 | 136.93 | 51.31 | 127.00 | 10.00 | 988.00 |
-| Lactate | 97.3 | 2.65 | 2.53 | 1.80 | 0.20 | 31.00 |
-| Bilirubin_total | 98.5 | 2.11 | 4.31 | 0.90 | 0.10 | 49.60 |
-| WBC | 93.6 | 11.45 | 7.73 | 10.30 | 0.10 | 440.00 |
-| Platelets | 94.1 | 196.01 | 103.64 | 181.00 | 1.00 | 2322.00 |
-| Age | 0.0 | 62.01 | 16.39 | 64.00 | 14.00 | 100.00 |
-| Gender | 0.0 | 0.56 | 0.50 | 1.00 | 0.00 | 1.00 |
+| variable        |   pct_missing |       mean |        std |   median |   min |    max |
+|:----------------|--------------:|-----------:|-----------:|---------:|------:|-------:|
+| HR              |       9.88262 |  84.5814   |  17.3252   |    83.5  |  20   |  280   |
+| O2Sat           |      13.0611  |  97.194    |   2.93692  |    98    |  20   |  100   |
+| Temp            |      66.1627  |  36.9772   |   0.770014 |    37    |  20.9 |   50   |
+| MAP             |      12.4513  |  82.4001   |  16.3418   |    80    |  20   |  300   |
+| Resp            |      15.3546  |  18.7265   |   5.09819  |    18    |   1   |  100   |
+| Creatinine      |      93.9044  |   1.5107   |   1.8056   |     0.94 |   0.1 |   46.6 |
+| Glucose         |      82.8943  | 136.932    |  51.3107   |   127    |  10   |  988   |
+| Lactate         |      97.3299  |   2.64667  |   2.52621  |     1.8  |   0.2 |   31   |
+| Bilirubin_total |      98.5092  |   2.11406  |   4.31147  |     0.9  |   0.1 |   49.6 |
+| WBC             |      93.5932  |  11.4464   |   7.73101  |    10.3  |   0.1 |  440   |
+| Platelets       |      94.0595  | 196.014    | 103.635    |   181    |   1   | 2322   |
+| Age             |       0       |  62.0095   |  16.3862   |    64    |  14   |  100   |
+| Gender          |       0       |   0.559269 |   0.496475 |     1    |   0   |    1   |
 
 ## Hourly Sepsis Rate (Class Balance Over Time)
 | ICULOS (hour) | Sepsis Rate |
@@ -136,8 +136,9 @@
 | 335 | 0.1765 |
 | 336 | 0.1250 |
 
+
 ## Data Quality Observations
-1. **High Missingness**: Most lab variables have >80%% missing values
+1. **High Missingness**: Most lab variables have >80% missing values
 2. **Vitals More Complete**: HR, O2Sat, SBP, MAP, DBP, Resp have lower missingness
 3. **Static Variables**: Age, Gender, Unit1, Unit2, HospAdmTime are constant per patient
 4. **Class Imbalance**: Sepsis rate ~7.3% - highly imbalanced
@@ -146,10 +147,10 @@
 
 ## Recommendations for Preprocessing
 1. **Imputation Strategy**: Use MICE/KNN/MissForest benchmark; vitals vs labs may need different approaches
-2. **Outlier Handling**: IQR capping (1.5xIQR) fitted on training patients only
+2. **Outlier Handling**: IQR capping (1.5×IQR) fitted on training patients only
 3. **Normalization**: RobustScaler for skewed lab distributions; StandardScaler for vitals
-4. **Feature Engineering**: Focus on variables with <50%% missingness for temporal features
-5. **Patient-Level Split**: Ensure no patient appears in multiple splits
+4. **Feature Engineering**: Focus on variables with <50% missingness for temporal features
+7. **Patient-Level Split**: Ensure no patient appears in multiple splits
 
 ---
 *Generated by enhanced/data/audit.py*
