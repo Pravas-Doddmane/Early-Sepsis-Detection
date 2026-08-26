@@ -543,3 +543,221 @@ python enhanced/features/temporal.py
 
 **Last Updated**: 2026-08-26 (Phase 5 complete — all 4 base models trained)
 **Next Action**: Run Phase 6 stacking ensemble (`enhanced/stacking/stack.py`)
+
+
+
+
+# Enhanced Sepsis Prediction — Project README
+
+> **Group project handoff doc.** Read this before touching any code. Full pipeline
+> details live in `PROJECT_GUIDE.md` — this file is the fast-resume status page.
+
+---
+
+## Current Status: Phases 1–8 Complete ✅ | Next: Phase 9 (XAI)
+
+```
+[✅] 1. Data Audit
+[✅] 2. Preprocessing
+[✅] 3. Temporal Feature Engineering
+[✅] 4. Hybrid Feature Selection
+[✅] 5. Base Models (RF, XGBoost, LightGBM, CatBoost)
+[✅] 6. Stacking Ensemble
+[✅] 7. Probability Calibration
+[✅] 8. Clinical Threshold Selection
+[  ] 9. Explainable AI (SHAP + LIME)      <-- START HERE
+[  ] 10. Interactive Dashboard
+[  ] 11. Final Evaluation & Reporting
+```
+
+---
+
+## Quick Resume
+
+```bash
+cd C:\PROJECT
+python enhanced/xai/explain.py       # Phase 9 — not yet written, needs script
+```
+
+If `enhanced/xai/explain.py` doesn't exist yet, that's expected — it hasn't been
+generated. Ask for it (see "How We've Been Working" below) or write it following
+the Phase 9 spec in `PROJECT_GUIDE.md`.
+
+---
+
+## What's Done, In Detail
+
+### Phase 1 — Data Audit
+- 40,336 patients, 1,552,210 hourly records (PhysioNet 2019, setA + setB)
+- Sepsis rate: 7.27% patient-level
+- Output: `enhanced/experiments/audit_report.md`, `patient_stats.csv`, `variable_stats.csv`
+
+### Phase 2 — Preprocessing
+- Patient-level split 70/15/15 — **28,234 / 6,051 / 6,051 patients**, no leakage
+- IQR capping (1.5×IQR), fit on train only
+- Imputation: KNN vs MICE benchmarked → **MICE selected**
+- Per-column StandardScaler / RobustScaler, fit on train only
+- Output: `enhanced/data/processed/{train,val,test}_processed.parquet`
+- Transformers: `enhanced/models/transformers/`
+
+### Phase 3 — Temporal Feature Engineering
+- Lags (t-1/3/6), diffs, rolling stats (mean/std/min/max @ 3h/6h/12h), trends
+- Causal only (hour ≤ t, no leakage)
+- **347 features** created from 19 base temporal columns
+- Output: `enhanced/data/processed/{train,val,test}_temporal.parquet`,
+  `temporal_feature_cols.json`
+- ⚠️ **Known slow point**: took ~70 min total (per-patient Python loop). If
+  re-running, consider vectorizing with `groupby().rolling()` — not blocking,
+  just noting for anyone touching this script again.
+
+### Phase 4 — Feature Selection
+- Mutual Information → top 150
+- Boruta (XGBoost GPU, 50 iterations) → 110 confirmed
+- Union → **150 final features**
+- Output: `enhanced/experiments/selected_features.json`, `mi_scores.csv`,
+  `boruta_hits.csv`
+
+### Phase 5 — Base Models (retrained on 150 selected temporal features)
+
+| Model | ROC-AUC | PR-AUC | Recall | Precision | F1 | MCC | Notes |
+|---|---|---|---|---|---|---|---|
+| CatBoost | 0.7781 | 0.0676 | 65.8% | 4.6% | 0.086 | 0.124 | GPU, best overall |
+| XGBoost | 0.7759 | 0.0672 | 64.0% | 4.8% | 0.089 | 0.126 | GPU |
+| RandomForest | 0.7581 | 0.0592 | 31.9% | 6.5% | 0.108 | 0.109 | CPU |
+| LightGBM | 0.7369 | 0.0556 | 25.8% | 6.7% | 0.106 | 0.100 | CPU (pip build has no GPU support) |
+
+- ⚠️ LightGBM's pip build **does not support GPU** — trained on CPU with fixed
+  500 iterations (early stopping on logloss was unreliable given 1.8% train
+  positive rate — it kept stopping at iteration 1). If you want LightGBM on
+  GPU, you'd need to build from source with `-DUSE_GPU=1`.
+
+### Phase 6 — Stacking Ensemble
+- Meta-learner: `LogisticRegression` on 4 base model val predictions
+- Meta weights: CatBoost (3.26) > XGBoost (2.28) > LightGBM (0.28) > RandomForest (−0.51)
+- **Test**: ROC-AUC 0.778, PR-AUC 0.070, Recall 69.4% (baseline recall: 55.25%)
+- Output: `enhanced/models/meta_learner.pkl`, `stack_val_preds.npy`, `stack_test_preds.npy`
+
+### Phase 7 — Probability Calibration
+- Platt vs Isotonic compared on val
+- Platt was essentially a no-op (meta-learner's own sigmoid was already close
+  to optimal) — **Isotonic selected**
+- Val: Brier 0.0173, ECE ~0.0000 (genuine — verified against test, not an
+  artifact; see conversation history if the "why is ECE zero" question comes
+  up again)
+- Test: Brier 0.0171, ECE 0.0003 — generalizes well
+- Output: `enhanced/models/calibrator.pkl`, `calibrated_test_preds.npy`,
+  `calibration_info.json`
+
+### Phase 8 — Clinical Threshold Selection
+- Swept ~200 thresholds on calibrated val predictions
+- Selection rule: minimum alarm rate subject to sensitivity ≥ 60%
+  (this floor is a **placeholder constant**, `MIN_SENSITIVITY` in
+  `threshold.py` — adjust and re-justify if your report needs a different
+  clinical tradeoff)
+- **Selected threshold: 0.0262**
+- Test: Sensitivity 66.2%, Specificity 75.6%, Precision 4.7%, Alarm rate 25.2%
+- ⚠️ **Important for the final report**: ~26% hourly alarm rate with ~4.7%
+  precision means ~20 false alarms per true alarm. This is the expected
+  consequence of a 1.8% positive base rate + a 60% recall floor, not a bug.
+  Worth reporting alongside sensitivity, and worth computing a **patient-level**
+  (not just hourly) alarm rate for the dashboard/report — it'll look more
+  clinically meaningful than the raw hourly number.
+- Output: `enhanced/models/optimal_threshold.json`, `enhanced/experiments/threshold_sweep.csv`
+
+---
+
+## Non-Negotiable Rules (still apply to Phases 9–11)
+
+1. **No leakage** — anything fit on data must be fit on Train only
+2. **Patient-level integrity** — the 28,234/6,051/6,051 patient split is final; don't resplit
+3. **Temporal causality** — already respected in `temporal.py`; don't undo it
+4. **Baseline preserved** — `baseline/` is read-only; compare against it in Phase 11
+   (Baseline: PR-AUC 0.0714, ROC-AUC 0.7598, Recall 55.25%)
+
+---
+
+## What's Next
+
+### Phase 9 — Explainable AI
+```bash
+python enhanced/xai/explain.py   # needs to be written
+```
+Spec: SHAP TreeExplainer (global, 500-patient sample + per-patient
+waterfall/force plots) and LIME (per-patient bar charts). Use whichever base
+model has the SHAP-compatible tree structure (CatBoost/XGBoost recommended)
+or explain the stacked prediction via the meta-learner + base model SHAP
+values combined — decide this before writing the script, it changes the
+implementation.
+
+### Phase 10 — Dashboard
+```bash
+streamlit run enhanced/dashboard/app.py   # needs to be written
+```
+Inputs: patient ID + ICU hour, or manual vitals entry.
+Outputs: risk probability + LOW/MODERATE/HIGH category, vitals timeline, SHAP
+global importance, LIME local explanation, model metadata.
+
+### Phase 11 — Final Evaluation
+```bash
+python enhanced/experiments/final_eval.py   # needs to be written
+```
+Compare baseline vs enhanced on test set, generate `results_table.csv`,
+figures, `final_report.md`. This is where the alarm-rate/precision tradeoff
+from Phase 8 needs honest discussion, not just headline sensitivity.
+
+---
+
+## File Map (as of Phase 8)
+
+```
+enhanced/
+├── data/
+│   ├── audit.py, preprocessing_fast.py
+│   └── processed/
+│       ├── {train,val,test}_processed.parquet
+│       ├── {train,val,test}_temporal.parquet
+│       ├── temporal_feature_cols.json
+│       └── split_info.json
+├── features/
+│   ├── temporal.py
+│   └── selection.py
+├── models/
+│   ├── train_rf.py, train_xgb.py, train_lgbm.py, train_catboost.py
+│   ├── _utils.py
+│   ├── {rf,xgb,lgbm,catboost}_model.{pkl,cbm}
+│   ├── {rf,xgb,lgbm,catboost}_val_preds.npy
+│   ├── {rf,xgb,lgbm,catboost}_metrics.json
+│   ├── meta_learner.pkl, stack_val_preds.npy, stack_test_preds.npy
+│   ├── stack_{val,test}_metrics.json
+│   ├── calibrator.pkl, calibrated_test_preds.npy, calibration_info.json
+│   ├── optimal_threshold.json
+│   └── transformers/
+├── stacking/stack.py
+├── calibration/calibrate.py, threshold.py
+├── xai/                    # empty — Phase 9
+├── dashboard/               # empty — Phase 10
+└── experiments/
+    ├── audit_report.md
+    ├── selected_features.json, mi_scores.csv, boruta_hits.csv
+    ├── calibration_curves.png
+    ├── threshold_sweep.csv
+    └── final_report.md      # empty — Phase 11
+```
+
+---
+
+## Known Issues / Things to Watch
+
+| Issue | Where | Status |
+|---|---|---|
+| LightGBM has no GPU in pip build | Phase 5 | Running on CPU, works fine, just slower |
+| RandomForest recall much lower than others (32% vs 65%+) | Phase 5 | Not blocking — meta-learner already down-weights it (coef −0.51) |
+| Temporal feature script is slow (~70 min) | Phase 3 | Works, just not optimized — leave as-is unless re-running from scratch |
+| ECE bin-clipping edge case | `calibrate.py` | Fixed (clips `bin_indices` to valid range) — was a latent bug, didn't change results on this dataset but keep the fix in |
+| High hourly alarm rate (~26%) at chosen threshold | Phase 8 | Expected given class imbalance — report honestly, compute patient-level rate too |
+
+---
+
+*Last updated after Phase 8. Update the checklist at the top whenever you
+finish a phase, so whoever picks this up next (including a fresh AI session)
+knows exactly where to resume without re-reading the whole history.*

@@ -23,8 +23,13 @@ def load_data():
     with open(EXPERIMENTS / "selected_features.json") as f:
         sel = json.load(f)
 
-    features = sel["final_features"]
-    target   = sel["target"]   # SepsisLabel
+    # Handle both list and dict formats
+    if isinstance(sel, list):
+        features = sel
+    else:
+        features = sel.get("final_features", sel.get("selected_features", []))
+
+    target = "SepsisLabel"  # Hardcoded, matches our data
 
     print("Loading train_temporal.parquet...")
     train = pd.read_parquet(PROCESSED / "train_temporal.parquet")

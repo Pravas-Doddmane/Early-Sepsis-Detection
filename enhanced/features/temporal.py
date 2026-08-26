@@ -1,238 +1,207 @@
+#!/usr/bin/env python
 """
 Phase 3: Temporal Feature Engineering
-======================================
-Reads: enhanced/data/processed/{train,val,test}_processed.parquet
-Writes: enhanced/data/processed/{train,val,test}_temporal.parquet
-        enhanced/data/processed/temporal_feature_cols.json
-
-Rules (STRICT -- no data leakage):
-  - All operations are within patient groups (groupby patient_id)
-  - Only causal operations: shift() (past values), rolling() with min_periods=1
-  - Static columns (Age, Gender, Unit1, Unit2, HospAdmTime) are passed through unchanged
-  - Missingness indicator columns (*_was_missing) are passed through unchanged
-
-Feature types generated per clinical variable:
-  Lags        : t-1, t-3, t-6
-  Differences : diff_1h, diff_3h, pct_change_1h
-  Rolling     : mean_3h, mean_6h, mean_12h, std_3h, std_6h, min_6h, max_6h
-  Trends      : slope_3h, slope_6h (linear regression slope)
-
-GPU note: This phase is CPU-only (sklearn/pandas). GPU is used in Phase 5.
+Creates causal temporal features (lags, rolling stats, trends) per patient.
+Constraint: Only hours ≤ current hour (no leakage).
 """
-
-import json
-import time
-import warnings
-from pathlib import Path
-
-import numpy as np
 import pandas as pd
-from scipy import stats as sp_stats
+import numpy as np
+from pathlib import Path
+from tqdm import tqdm
+import warnings
+warnings.filterwarnings('ignore')
 
-warnings.filterwarnings("ignore")
+INPUT_DIR = Path("enhanced/data/processed")
+OUTPUT_DIR = Path("enhanced/data/processed")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# --- Paths --------------------------------------------------------------------
-ROOT = Path(__file__).resolve().parent.parent.parent   # repo root
-PROCESSED_DIR = ROOT / "enhanced" / "data" / "processed"
-OUTPUT_DIR    = PROCESSED_DIR
-
-SPLIT_INFO_PATH = PROCESSED_DIR / "split_info.json"
-
-# --- Clinical variables for temporal features ---------------------------------
-TEMPORAL_VARS = [
-    # Vitals (observed ~85-90%)
-    "HR", "O2Sat", "Temp", "SBP", "MAP", "DBP", "Resp",
-    # Key labs (selected < 50% missing -- from audit)
-    "FiO2", "pH", "PaCO2", "SaO2",
-    "BUN", "Calcium", "Glucose", "Potassium",
-    "Hct", "Hgb", "WBC", "Platelets",
+# Base clinical variables (from Phase 2, <50% missing)
+BASE_FEATURES = [
+    'HR', 'O2Sat', 'Temp', 'SBP', 'MAP', 'DBP', 'Resp',
+    'FiO2', 'pH', 'PaCO2', 'SaO2', 'BUN', 'Calcium', 'Glucose',
+    'Potassium', 'Hct', 'Hgb', 'WBC', 'Platelets'
 ]
 
-STATIC_VARS = ["Age", "Gender", "Unit1", "Unit2", "HospAdmTime"]
-ID_VARS     = ["patient_id", "ICULOS", "SepsisLabel"]
+STATIC_FEATURES = ['Age', 'Gender', 'Unit1', 'Unit2', 'HospAdmTime']
+TARGET = 'SepsisLabel'
+TIME_VAR = 'ICULOS'
+ID_VAR = 'patient_id'
+
+# Missingness indicators (created in Phase 2)
+MISSING_INDICATORS = [f'{f}_was_missing' for f in BASE_FEATURES]
 
 
-# --- Slope helper -------------------------------------------------------------
-def _linear_slope(values: np.ndarray) -> float:
-    """Linear regression slope. Returns 0.0 if fewer than 2 non-NaN values."""
-    mask = ~np.isnan(values)
-    n = mask.sum()
-    if n < 2:
-        return 0.0
-    x = np.where(mask)[0].astype(float)
-    y = values[mask]
-    slope, *_ = sp_stats.linregress(x, y)
-    return float(slope)
+def load_split(name):
+    """Load processed split."""
+    df = pd.read_parquet(INPUT_DIR / f"{name}_processed.parquet")
+    print(f"Loaded {name}: {df.shape}")
+    return df
 
 
-# --- Per-patient feature builder ----------------------------------------------
-def build_temporal_features_for_group(grp: pd.DataFrame) -> pd.DataFrame:
+def create_temporal_features(df):
     """
-    For a single patient DataFrame (sorted by ICULOS), compute temporal features.
-    Causal: all features at row t use only rows <= t.
+    Create temporal features per patient (causal - only past hours).
+    Groups by patient_id, sorts by ICULOS.
     """
-    grp = grp.sort_values("ICULOS").reset_index(drop=True)
-    new_cols = {}
+    print("Creating temporal features...")
 
-    for col in TEMPORAL_VARS:
-        if col not in grp.columns:
-            continue
+    # Sort by patient and time
+    df = df.sort_values([ID_VAR, TIME_VAR]).reset_index(drop=True)
 
-        s = grp[col]
+    # Features to create temporal for
+    temporal_cols = [c for c in BASE_FEATURES if c in df.columns]
+    print(f"Base temporal columns: {len(temporal_cols)}")
 
-        # Lags
-        new_cols[f"{col}_lag1"] = s.shift(1)
-        new_cols[f"{col}_lag3"] = s.shift(3)
-        new_cols[f"{col}_lag6"] = s.shift(6)
+    # Result dataframe
+    result_dfs = []
 
-        # Differences
-        new_cols[f"{col}_diff1h"] = s - s.shift(1)
-        new_cols[f"{col}_diff3h"] = s - s.shift(3)
-        prev1 = s.shift(1)
-        new_cols[f"{col}_pct1h"]  = (s - prev1) / prev1.abs().replace(0, np.nan)
+    # Process each patient
+    for pid, group in tqdm(df.groupby(ID_VAR), desc="Patients"):
+        group = group.copy().reset_index(drop=True)
+        n_rows = len(group)
 
-        # Rolling statistics (causal window)
-        for w, label in [(3, "3h"), (6, "6h"), (12, "12h")]:
-            new_cols[f"{col}_mean_{label}"] = s.rolling(window=w, min_periods=1).mean()
+        # Static features (same for all rows)
+        static_data = {col: group[col].iloc[0] for col in STATIC_FEATURES if col in group.columns}
 
-        for w, label in [(3, "3h"), (6, "6h")]:
-            new_cols[f"{col}_std_{label}"] = s.rolling(window=w, min_periods=1).std(ddof=0)
+        # Create features for each temporal column
+        feat_dict = {col: group[col].values for col in temporal_cols}
+        feat_dict.update({col: group[col].values for col in MISSING_INDICATORS if col in group.columns})
 
-        new_cols[f"{col}_min_6h"] = s.rolling(window=6, min_periods=1).min()
-        new_cols[f"{col}_max_6h"] = s.rolling(window=6, min_periods=1).max()
+        # Target and time
+        feat_dict[TARGET] = group[TARGET].values
+        feat_dict[TIME_VAR] = group[TIME_VAR].values
+        feat_dict[ID_VAR] = group[ID_VAR].values
 
-        # Trend: linear slope over 3h and 6h windows
-        for w, label in [(3, "3h"), (6, "6h")]:
-            new_cols[f"{col}_slope_{label}"] = (
-                s.rolling(window=w, min_periods=1)
-                 .apply(_linear_slope, raw=True)
-            )
+        # Add static
+        for col, val in static_data.items():
+            feat_dict[col] = np.full(n_rows, val)
 
-    result = pd.concat([grp, pd.DataFrame(new_cols, index=grp.index)], axis=1)
+        # TEMPORAL FEATURES
+        for col in temporal_cols:
+            vals = group[col].values
+
+            # 1. LAGS: t-1, t-3, t-6
+            for lag in [1, 3, 6]:
+                lagged = np.full(n_rows, np.nan)
+                lagged[lag:] = vals[:-lag]
+                feat_dict[f'{col}_lag{lag}'] = lagged
+
+            # 2. DIFFERENCES: diff_1h, diff_3h, pct_change_1h
+            for lag in [1, 3]:
+                diff = np.full(n_rows, np.nan)
+                diff[lag:] = vals[lag:] - vals[:-lag]
+                feat_dict[f'{col}_diff{lag}h'] = diff
+
+            # pct_change_1h
+            pct = np.full(n_rows, np.nan)
+            pct[1:] = np.where(vals[:-1] != 0, (vals[1:] - vals[:-1]) / np.abs(vals[:-1]), 0)
+            feat_dict[f'{col}_pct_change1h'] = pct
+
+            # 3. ROLLING (causal): mean, std, min, max
+            for window in [3, 6, 12]:
+                # Mean
+                rolling_mean = np.full(n_rows, np.nan)
+                for i in range(n_rows):
+                    start = max(0, i - window + 1)
+                    window_vals = vals[start:i+1]
+                    if len(window_vals) > 0 and not np.all(np.isnan(window_vals)):
+                        rolling_mean[i] = np.nanmean(window_vals)
+                feat_dict[f'{col}_mean{window}h'] = rolling_mean
+
+                # Std
+                rolling_std = np.full(n_rows, np.nan)
+                for i in range(n_rows):
+                    start = max(0, i - window + 1)
+                    window_vals = vals[start:i+1]
+                    if len(window_vals) > 1 and not np.all(np.isnan(window_vals)):
+                        rolling_std[i] = np.nanstd(window_vals)
+                feat_dict[f'{col}_std{window}h'] = rolling_std
+
+            # Min/Max for 6h window
+            for window in [6]:
+                rolling_min = np.full(n_rows, np.nan)
+                rolling_max = np.full(n_rows, np.nan)
+                for i in range(n_rows):
+                    start = max(0, i - window + 1)
+                    window_vals = vals[start:i+1]
+                    if len(window_vals) > 0 and not np.all(np.isnan(window_vals)):
+                        rolling_min[i] = np.nanmin(window_vals)
+                        rolling_max[i] = np.nanmax(window_vals)
+                feat_dict[f'{col}_min{window}h'] = rolling_min
+                feat_dict[f'{col}_max{window}h'] = rolling_max
+
+            # 4. TRENDS: Linear slope over 3h, 6h windows
+            for window in [3, 6]:
+                slope = np.full(n_rows, np.nan)
+                for i in range(n_rows):
+                    start = max(0, i - window + 1)
+                    window_vals = vals[start:i+1]
+                    valid_idx = ~np.isnan(window_vals)
+                    if np.sum(valid_idx) >= 2:
+                        x = np.arange(np.sum(valid_idx))
+                        y = window_vals[valid_idx]
+                        slope[i] = np.polyfit(x, y, 1)[0]
+                feat_dict[f'{col}_slope{window}h'] = slope
+
+        result_dfs.append(pd.DataFrame(feat_dict))
+
+    result = pd.concat(result_dfs, ignore_index=True)
+    print(f"Created temporal features: {result.shape}")
     return result
 
 
-# --- Main processing function -------------------------------------------------
-def process_split(name: str) -> pd.DataFrame:
-    path = PROCESSED_DIR / f"{name}_processed.parquet"
-    print(f"\n{'='*60}")
-    print(f"Processing [{name}] split: {path.name}")
-    df = pd.read_parquet(path)
-    print(f"  Loaded  : {df.shape[0]:,} rows x {df.shape[1]} cols")
-    print(f"  Patients: {df['patient_id'].nunique():,}")
+def save_temporal_features(train_df, val_df, test_df):
+    """Save temporal features and feature list."""
+    print("Saving temporal features...")
 
-    df = df.sort_values(["patient_id", "ICULOS"]).reset_index(drop=True)
+    train_df.to_parquet(OUTPUT_DIR / "train_temporal.parquet", index=False)
+    val_df.to_parquet(OUTPUT_DIR / "val_temporal.parquet", index=False)
+    test_df.to_parquet(OUTPUT_DIR / "test_temporal.parquet", index=False)
 
-    t0 = time.time()
-    try:
-        from tqdm import tqdm
-        tqdm.pandas(desc=f"  [{name}] temporal features")
-        result = (
-            df.groupby("patient_id", sort=False, group_keys=False)
-              .progress_apply(build_temporal_features_for_group)
-        )
-    except ImportError:
-        n_patients = df["patient_id"].nunique()
-        print(f"  (tqdm not installed -- processing {n_patients:,} patients...)")
-        result = (
-            df.groupby("patient_id", sort=False, group_keys=False)
-              .apply(build_temporal_features_for_group)
-        )
+    # Feature columns (exclude target, id, time)
+    exclude = {TARGET, ID_VAR, TIME_VAR}
+    feature_cols = [c for c in train_df.columns if c not in exclude]
 
-    result = result.reset_index(drop=True)
-    elapsed = time.time() - t0
-    n_new = result.shape[1] - df.shape[1]
-    print(f"  Done in {elapsed:.1f}s | {result.shape[0]:,} rows x {result.shape[1]} cols (+{n_new} new features)")
+    import json
+    with open(OUTPUT_DIR / "temporal_feature_cols.json", 'w') as f:
+        json.dump(feature_cols, f)
 
-    assert result.shape[0] == df.shape[0], "Row count mismatch -- check groupby logic."
-    return result
+    print(f"Saved temporal features:")
+    print(f"  train: {train_df.shape}")
+    print(f"  val:   {val_df.shape}")
+    print(f"  test:  {test_df.shape}")
+    print(f"  Features: {len(feature_cols)}")
+    print(f"  Feature list: {OUTPUT_DIR}/temporal_feature_cols.json")
 
 
-# --- Entry point --------------------------------------------------------------
 def main():
     print("=" * 60)
     print("Phase 3: Temporal Feature Engineering")
     print("=" * 60)
 
-    with open(SPLIT_INFO_PATH) as f:
-        split_info = json.load(f)
+    # Load splits
+    train = load_split("train")
+    val = load_split("val")
+    test = load_split("test")
 
-    print(f"\nLoaded split_info.json")
-    print(f"  Base features: {len(split_info['feature_columns'])}")
-    print(f"  Target       : {split_info['target']}")
+    # Create temporal features for each split
+    print("\n[1/3] Creating train temporal features...")
+    train_temp = create_temporal_features(train)
 
-    base_features    = set(split_info["feature_columns"])
-    valid_temporal   = [v for v in TEMPORAL_VARS if v in base_features]
-    skipped          = [v for v in TEMPORAL_VARS if v not in base_features]
-    if skipped:
-        print(f"  Warning: skipping vars not in processed data: {skipped}")
-    print(f"  Temporal vars: {len(valid_temporal)} -> ~{len(valid_temporal) * 13} new features")
+    print("\n[2/3] Creating val temporal features...")
+    val_temp = create_temporal_features(val)
 
-    # Process splits
-    splits = {}
-    for split_name in ["train", "val", "test"]:
-        splits[split_name] = process_split(split_name)
+    print("\n[3/3] Creating test temporal features...")
+    test_temp = create_temporal_features(test)
 
-    # Build feature column manifest
-    train_df = splits["train"]
-    original_cols = set(
-        ID_VARS + STATIC_VARS + split_info["feature_columns"]
-        + [c for c in train_df.columns if c.endswith("_was_missing")]
-    )
-    temporal_feature_cols = [c for c in train_df.columns if c not in original_cols]
-    all_feature_cols      = split_info["feature_columns"] + temporal_feature_cols
+    # Save
+    print("\nSaving...")
+    save_temporal_features(train_temp, val_temp, test_temp)
 
-    print(f"\nFeature summary:")
-    print(f"  Base features      : {len(split_info['feature_columns'])}")
-    print(f"  New temporal feats : {len(temporal_feature_cols)}")
-    print(f"  Total features     : {len(all_feature_cols)}")
-
-    temporal_info = {
-        "base_feature_columns"    : split_info["feature_columns"],
-        "temporal_feature_columns": temporal_feature_cols,
-        "all_feature_columns"     : all_feature_cols,
-        "target"                  : split_info["target"],
-        "time_var"                : split_info["time_var"],
-        "patient_id_col"          : "patient_id",
-        "temporal_vars_used"      : valid_temporal,
-        "static_vars"             : STATIC_VARS,
-    }
-
-    json_out = OUTPUT_DIR / "temporal_feature_cols.json"
-    with open(json_out, "w") as f:
-        json.dump(temporal_info, f, indent=2)
-    print(f"\n  Saved feature manifest -> {json_out.name}")
-
-    # Save parquets
-    print("\nSaving output parquets...")
-    for split_name, df in splits.items():
-        out_path = OUTPUT_DIR / f"{split_name}_temporal.parquet"
-        df.to_parquet(out_path, index=False)
-        size_mb = out_path.stat().st_size / 1e6
-        print(f"  {split_name}_temporal.parquet -> {size_mb:.1f} MB  ({df.shape[0]:,} rows x {df.shape[1]} cols)")
-
-    # Sanity checks
-    print("\nSanity checks:")
-    sample = splits["train"]
-    pid = sample["patient_id"].iloc[10]
-    pat = sample[sample["patient_id"] == pid].sort_values("ICULOS").head(6)
-    if "HR_lag1" in pat.columns:
-        print(f"\n  Patient {pid} | HR temporal features (first 6 hours):")
-        print(pat[["ICULOS", "HR", "HR_lag1", "HR_diff1h", "HR_mean_3h", "HR_slope_3h"]].to_string(index=False))
-
-    first_hrs = sample.groupby("patient_id").first()
-    lag1_null = first_hrs["HR_lag1"].isna().mean() if "HR_lag1" in first_hrs else 1.0
-    print(f"\n  Lag-1 NaN at first ICU hour: {lag1_null*100:.1f}%  (should be ~100% -- causal check)")
-
-    before = pd.read_parquet(PROCESSED_DIR / "train_processed.parquet")["SepsisLabel"].sum()
-    after  = splits["train"]["SepsisLabel"].sum()
-    assert before == after, "SepsisLabel sum changed -- data integrity error!"
-    print(f"  SepsisLabel sum preserved: {after:,} (before={before:,}) OK")
-
-    print("\n" + "="*60)
-    print("Phase 3 COMPLETE")
+    print("\n" + "=" * 60)
+    print("Phase 3 Complete!")
+    print("=" * 60)
     print("Next: python enhanced/features/selection.py")
-    print("="*60)
 
 
 if __name__ == "__main__":
