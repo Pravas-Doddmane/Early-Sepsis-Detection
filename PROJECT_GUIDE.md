@@ -148,8 +148,8 @@ C:\PROJECT\
 
 ---
 
-### Phase 3: Temporal Feature Engineering 🔜 NEXT
-**Script**: `enhanced/features/temporal.py` (to be created)
+### Phase 3: Temporal Feature Engineering ✅ DONE
+**Script**: `enhanced/features/temporal.py`
 **Run**: `python enhanced/features/temporal.py`
 
 **What it does** (per patient, causally — only hours ≤ current hour):
@@ -164,58 +164,66 @@ For each clinical variable (vitals + key labs):
 
 **Constraint**: Group by `patient_id`, sort by `ICULOS`, use only `.shift()` and `.rolling().apply()` with `min_periods=1` — **never use future data**.
 
-**Outputs**:
-- `enhanced/data/processed/train_temporal.parquet`
-- `enhanced/data/processed/val_temporal.parquet`
-- `enhanced/data/processed/test_temporal.parquet`
-- Feature column list JSON
+**Outputs** (✅ verified):
+- `enhanced/data/processed/train_temporal.parquet` — **1.83 GB** (1.09M rows × 314 cols)
+- `enhanced/data/processed/val_temporal.parquet` — 404 MB
+- `enhanced/data/processed/test_temporal.parquet` — 410 MB
+- `enhanced/data/processed/temporal_feature_cols.json` — 24 base + 285 temporal = **309 features**
 
 ---
 
-### Phase 4: Hybrid Feature Selection
-**Script**: `enhanced/features/selection.py` (to be created)
+### Phase 4: Hybrid Feature Selection ✅ DONE
+**Script**: `enhanced/features/selection.py`
+**Run**: `python enhanced/features/selection.py`
 
-**Pipeline**:
+**Pipeline (GPU-accelerated)**:
 ```
-All Features (100s)
+All Features (309)
     │
-    ├─ Boruta (RF, n_iter=50, p<0.01) → selected_boruta
-    └─ Mutual Information (top k=100) → selected_mi
+    ├─ Step 1: Mutual Information (sklearn, CPU, fast filter) → top 150 candidates
     │
-    └─ Union → final_features
+    ├─ Step 2: Boruta with XGBoost GPU estimator (RTX 4060)
+    │          n_iter=50, p<0.01 — runs on 150k stratified sample
+    │          → confirmed, tentative, rejected sets
+    │
+    └─ Step 3: Union(Boruta_confirmed + Boruta_tentative + MI_top100)
+               → final_features (typically 80–150 features)
 ```
 
-**Outputs**:
-- `enhanced/experiments/selected_features.json`
-- `enhanced/experiments/feature_importance.csv` (Boruta + MI scores)
+**GPU note**: Boruta uses `XGBClassifier(tree_method='hist', device='cuda')`
+This is ~5–10× faster than CPU RandomForest-based Boruta.
+
+**Results (✅ verified)**:
+- Boruta confirmed: 24 features | Tentative: 32 | MI-top-100 union = **109 final features**
+- GPU used: `gpu_used: true` (XGBoost CUDA on RTX 4060)
+
+**Outputs (✅)**:
+- `enhanced/experiments/selected_features.json` — 109 final features
+- `enhanced/experiments/feature_importance.csv` — MI + Boruta scores
+- `enhanced/experiments/feature_selection_plot.png` — top-50 bar chart
 
 ---
 
-### Phase 5: Four Base Models (Parallelizable)
-**Scripts**: `enhanced/models/train_rf.py`, `train_xgb.py`, `train_lgbm.py`, `train_catboost.py`
-**Run**: Can run all 4 in parallel
+### Phase 5: Four Base Models ✅ DONE
+**Scripts**: `enhanced/models/train_xgb.py`, `train_lgbm.py`, `train_catboost.py`, `train_rf.py`
+**Run**: From `enhanced/models/` directory
 
-| Model | Key Params | GPU Support |
-|-------|------------|-------------|
-| **RandomForest** | 500 trees, `class_weight='balanced'`, `n_jobs=-1` | No |
-| **XGBoost** | `scale_pos_weight`, `early_stopping_rounds=50`, `tree_method='gpu_hist'` | ✅ Yes |
-| **LightGBM** | `scale_pos_weight`, `early_stopping_rounds=50`, `device='gpu'` | ✅ Yes |
-| **CatBoost** | `scale_pos_weight`, `early_stopping_rounds=50`, `task_type='GPU'` | ✅ Yes |
+| Model | ROC-AUC | PR-AUC | Recall | Precision | F1 | Train Time | Accelerator |
+|---|---|---|---|---|---|---|---|
+| **CatBoost** | **0.7685** | **0.0631** | **64.29%** | 0.0427 | 0.0801 | 4.2s | ✅ GPU (RTX 4060) |
+| **XGBoost** | **0.7626** | **0.0664** | **62.11%** | 0.0445 | 0.0831 | 3.3s | ✅ GPU (RTX 4060) |
+| **RandomForest** | 0.7407 | 0.0545 | 6.74% | 0.1071 | 0.0827 | 105.5s | CPU (24 threads) |
+| **LightGBM** | 0.7089 | 0.0415 | 0.00% | 0.0000 | 0.0000 | 3.6s | CPU (multi-core) |
 
-**Each script does**:
-1. Load temporal features (train + val)
-2. Train on train, evaluate on val
-3. Save: `model.pkl`, `val_preds.npy`, `metrics.json`
-4. Use `scale_pos_weight = n_neg / n_pos` for class imbalance
-
-**Outputs per model** (in `enhanced/models/`):
-- `{model}_model.pkl`
-- `{model}_val_preds.npy` (for stacking)
-- `{model}_metrics.json` (ROC-AUC, PR-AUC, Recall, Precision, F1, MCC, Brier)
+**Outputs generated (✅)**:
+- `xgb_model.pkl`, `xgb_val_preds.npy`, `xgb_metrics.json`
+- `catboost_model.cbm`, `catboost_val_preds.npy`, `catboost_metrics.json`
+- `rf_model.pkl`, `rf_val_preds.npy`, `rf_metrics.json`
+- `lgbm_model.pkl`, `lgbm_val_preds.npy`, `lgbm_metrics.json`
 
 ---
 
-### Phase 6: Stacking Ensemble
+### Phase 6: Stacking Ensemble 🔜 NEXT
 **Script**: `enhanced/stacking/stack.py`
 
 **Meta-learner**: LogisticRegression(C=1.0, `class_weight='balanced'`, max_iter=1000)
@@ -517,7 +525,10 @@ python enhanced/features/temporal.py
 | Date | Phase | Author | Notes |
 |------|-------|--------|-------|
 | 2026-08-25 | 1–2 | You | Audit + fast preprocessing done |
-| — | 3–11 | — | Pending |
+| 2026-08-25 | 3 | You | Temporal features: 309 features, train=1.83GB |
+| 2026-08-26 | 4 | You | Feature selection: 109 features (Boruta+MI, GPU) |
+| 2026-08-26 | 5 | You | Base models trained: XGBoost, LightGBM, CatBoost, RF |
+| — | 6–11 | — | Pending |
 
 ---
 
@@ -530,5 +541,5 @@ python enhanced/features/temporal.py
 
 ---
 
-**Last Updated**: 2026-08-25 (Phase 2 complete)
-**Next Action**: Create `enhanced/features/temporal.py` and run Phase 3
+**Last Updated**: 2026-08-26 (Phase 5 complete — all 4 base models trained)
+**Next Action**: Run Phase 6 stacking ensemble (`enhanced/stacking/stack.py`)
