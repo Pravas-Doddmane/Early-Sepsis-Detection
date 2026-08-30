@@ -26,7 +26,7 @@ EXPERIMENTS.mkdir(parents=True, exist_ok=True)
 
 def load_val_data():
     """Load validation probabilities and labels."""
-    val_probs = np.load(MODELS_DIR / "stack_val_preds.npy")
+    val_probs = np.load(MODELS_DIR / "stack_oof_val_preds.npy")
     import pandas as pd
     val = pd.read_parquet("enhanced/data/processed/val_temporal.parquet")
     y_val = val['SepsisLabel'].values.astype(int)

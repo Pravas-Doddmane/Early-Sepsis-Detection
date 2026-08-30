@@ -19,7 +19,12 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_data():
-    """Load train/val temporal parquets + selected features."""
+    """Load train/val TEMPORAL parquets (created from imputed base features) + selected features.
+
+    Temporal features are created from Phase 2's imputed base features, so the only NaNs
+    are STRUCTURAL (from lag/rolling operations with insufficient history). These are
+    correctly filled with 0 (meaning 'no prior history available').
+    """
     with open(EXPERIMENTS / "selected_features.json") as f:
         sel = json.load(f)
 
@@ -31,16 +36,18 @@ def load_data():
 
     target = "SepsisLabel"  # Hardcoded, matches our data
 
-    print("Loading train_temporal.parquet...")
+    print("Loading train_temporal.parquet (temporal features from imputed base)...")
     train = pd.read_parquet(PROCESSED / "train_temporal.parquet")
-    print("Loading val_temporal.parquet...")
+    print("Loading val_temporal.parquet (temporal features from imputed base)...")
     val   = pd.read_parquet(PROCESSED / "val_temporal.parquet")
 
-    # Keep only selected features (fill NaN with 0 -- models handle NaN differently)
+    # Keep only selected features
     available = [f for f in features if f in train.columns]
     print(f"  Selected features : {len(features)}")
     print(f"  Available in data : {len(available)}")
 
+    # Fill STRUCTURAL NaNs only (from lag/rolling where no history exists)
+    # Base features were already imputed in Phase 2; these NaNs = 'no history yet'
     X_train = train[available].fillna(0).values.astype(np.float32)
     y_train = train[target].values.astype(int)
     X_val   = val[available].fillna(0).values.astype(np.float32)

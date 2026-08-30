@@ -214,7 +214,7 @@ This is ~5–10× faster than CPU RandomForest-based Boruta.
 | **XGBoost** | **0.7626** | **0.0664** | **62.11%** | 0.0445 | 0.0831 | 3.3s | ✅ GPU (RTX 4060) |
 | **RandomForest** | 0.7407 | 0.0545 | 6.74% | 0.1071 | 0.0827 | 105.5s | CPU (24 threads) |
 | **LightGBM** | 0.7089 | 0.0415 | 0.00% | 0.0000 | 0.0000 | 3.6s | CPU (multi-core) |
-
+ 
 **Outputs generated (✅)**:
 - `xgb_model.pkl`, `xgb_val_preds.npy`, `xgb_metrics.json`
 - `catboost_model.cbm`, `catboost_val_preds.npy`, `catboost_metrics.json`
@@ -255,7 +255,7 @@ This is ~5–10× faster than CPU RandomForest-based Boruta.
 
 ### Phase 8: Clinical Threshold Selection
 **Script**: `enhanced/calibration/threshold.py`
-
+  
 **On Val (calibrated)**:
 - Sweep thresholds 0.01–0.99
 - Compute: Sensitivity, Precision, F1, MCC, Alarm Rate (pred positive rate)
@@ -761,3 +761,407 @@ enhanced/
 *Last updated after Phase 8. Update the checklist at the top whenever you
 finish a phase, so whoever picks this up next (including a fresh AI session)
 knows exactly where to resume without re-reading the whole history.*
+
+---
+
+## 🎯 Model Improvement Plan (Post-Phase 8)
+
+**Goal**: Beat baseline PR-AUC 0.0714, ROC-AUC 0.7598, Recall 55.25%
+**Current best (Phase 6-8)**: ROC-AUC 0.778, PR-AUC 0.070, Recall 66.2%
+
+### Root Cause Identified
+**Critical bug in `_utils.py:load_data()`**: Training loads `_temporal.parquet` (has NaNs) and uses `.fillna(0)` instead of the properly fitted MICE imputer from Phase 2. Labs with >90% missingness get filled with 0 (clinically wrong — Lactate=0 means normal, not missing).
+
+---
+
+### Implementation Order (Do Sequentially, Verify Each Step)
+
+#### Step 1: Fix Imputation Bug (Highest Impact — ~15 min)
+**File**: `enhanced/models/_utils.py`
+**Change**: `load_data()` to load `_processed.parquet` (already imputed + scaled) instead of `_temporal.parquet`
+```python
+# BEFORE (buggy):
+train = pd.read_parquet(PROCESSED / "train_temporal.parquet")
+X_train = train[available].fillna(0).values.astype(np.float32)
+
+# AFTER (fixed):
+train = pd.read_parquet(PROCESSED / "train_processed.parquet")
+X_train = train[available].values.astype(np.float32)  # No fillna(0)!
+```
+**Then retrain**: All 4 base models → re-stack → re-calibrate → re-threshold
+**Expected**: PR-AUC +0.01-0.02, ROC-AUC +0.01, Recall +3%
+
+---
+
+#### Step 2: Better Class Imbalance Handling
+**Files**: `enhanced/models/train_xgb.py`, `train_catboost.py`, `train_lgbm.py`
+
+**XGBoost** — Add focal loss custom objective (gamma=2.0, alpha=0.25)
+**CatBoost** — Use `auto_class_weights='Balanced'` + sampling
+**LightGBM** — Enable early stopping on `average_precision` (PR-AUC) metric
+```python
+# LightGBM fix:
+params = {
+    "metric": "average_precision",  # PR-AUC for early stopping
+    "is_unbalance": True,           # Native imbalance handling
+    "early_stopping_rounds": 50,
+    # ...
+}
+```
+
+---
+
+#### Step 3: Reduce Feature Count (150 → 80)
+**File**: `enhanced/features/selection.py`
+**Change**: `top_k=150` → `top_k=80` in `step1_mutual_info()`
+**Rationale**: Remove noisy features; Boruta already confirmed only ~24
+
+---
+
+#### Step 4: Improve Stacking
+**File**: `enhanced/stacking/stack.py`
+
+A. **Calibrate base model predictions before stacking**:
+```python
+from sklearn.calibration import CalibratedClassifierCV
+for name in ['rf', 'xgb', 'lgbm', 'catboost']:
+    cal = CalibratedClassifierCV(base_model, method='isotonic', cv='prefit')
+    cal.fit(X_val, y_val)
+    val_probs_cal[name] = cal.predict_proba(X_val)[:, 1]
+
+X_meta = np.column_stack([val_probs_cal[n] for n in MODEL_NAMES])
+```
+
+B. **Better meta-learner** (replace LogisticRegression):
+```python
+# Option: GradientBoostingClassifier
+meta = GradientBoostingClassifier(n_estimators=200, max_depth=3, learning_rate=0.05)
+# Or: XGBoost meta-learner
+```
+
+---
+
+#### Step 5: Add LSTM as 5th Base Model
+**New file**: `enhanced/models/train_lstm.py`
+- Patient sequences (pad to 48h)
+- LSTM captures true temporal dynamics tree models miss
+- Add to stacking ensemble
+
+---
+
+### Verification Checklist Per Step
+
+| Step | Verify On Val | Target Improvement |
+|------|---------------|-------------------|
+| 1. Fix imputation | PR-AUC, ROC-AUC, Recall | PR-AUC > 0.08 |
+| 2. Imbalance handling | PR-AUC, Recall | PR-AUC > 0.085 |
+| 3. Feature reduction | PR-AUC, Precision | Precision > 5% |
+| 4. Better stacking | PR-AUC, ROC-AUC | PR-AUC > 0.09 |
+| 5. LSTM | All metrics | PR-AUC > 0.095 |
+
+---
+
+### Baseline Comparison Target
+
+| Metric | Baseline | Current Best | Target After Fixes |
+|--------|----------|--------------|-------------------|
+| **PR-AUC** | **0.0714** | 0.070 | **> 0.095** |
+| **ROC-AUC** | **0.7598** | 0.778 | **> 0.81** |
+| **Recall** | **55.25%** | 66.2% | **> 75%** |
+| **Precision** | — | 4.7% | **> 7%** |
+| **F1** | — | 0.087 | **> 0.12** |
+
+---
+
+### Execution Commands (After Each Step)
+
+```bash
+cd C:\PROJECT
+
+# Step 1: Fix _utils.py, then retrain all 4 models
+python enhanced/models/train_rf.py
+python enhanced/models/train_xgb.py
+python enhanced/models/train_lgbm.py
+python enhanced/models/train_catboost.py
+
+# Re-stack
+python enhanced/stacking/stack.py
+
+# Re-calibrate
+python enhanced/calibration/calibrate.py
+
+# Re-threshold
+python enhanced/calibration/threshold.py
+```
+
+
+# Sepsis Early-Warning Model — Project Brief
+
+**Base paper being differentiated from:** Santos et al., "Interpretable Machine
+Learning Model Based on SOFA Score for ICU Sepsis Mortality Prediction with
+Multicenter Validation" (IEEE Latin America Transactions, Dec 2025) —
+retrospective **mortality** prediction on MIMIC-IV/eICU using static,
+stay-level-aggregated SOFA variables, CatBoost, OR-based feature selection,
+global SHAP.
+
+**Our project:** real-time, hourly **sepsis onset** prediction (PhysioNet/CinC
+2019 Challenge dataset), using causal temporal feature engineering — a
+structurally different and arguably more clinically actionable task than the
+base paper's one-shot mortality prediction.
+
+---
+
+## 1. Dataset & Pipeline (Phases 1–8) — DONE
+
+### Phase 1 — Data Audit
+- PhysioNet 2019 Challenge (setA + setB combined): 40,336 patients, 1,552,210
+  hourly records
+- Sepsis rate: 7.27% patient-level (1.8% row/hour-level — this is the
+  imbalance the whole pipeline has to handle)
+
+### Phase 2 — Preprocessing
+- Patient-level split 70/15/15 → 28,234 / 6,051 / 6,051 patients, no leakage
+- IQR capping (1.5×IQR), fit on train only
+- Imputation: KNN vs MICE benchmarked → MICE selected (fit on train only)
+- Per-column StandardScaler/RobustScaler, fit on train only
+- Missingness indicators added as features
+
+### Phase 3 — Temporal Feature Engineering
+- Lags (t-1/3/6), diffs, rolling stats (mean/std/min/max @ 3h/6h/12h), trends
+- Causal only (hour ≤ t, no leakage)
+- 347 features from 19 base columns (HR, O2Sat, Temp, SBP, MAP, DBP, Resp,
+  FiO2, pH, PaCO2, SaO2, BUN, Calcium, Glucose, Potassium, Hct, Hgb, WBC,
+  Platelets + Age, Gender, Unit1, Unit2, HospAdmTime)
+- Structural NaNs (insufficient history for rolling windows) are
+  **intentionally filled with 0** ("no history yet") — consistent choice
+  across train/val/test, confirmed correct after today's debugging
+
+### Phase 4 — Feature Selection
+- Mutual Information → top 150, Boruta (XGBoost GPU) → 110 confirmed
+- Union → 150 final features used for all base models
+
+### Phase 5 — Base Models + Class Imbalance Ablation ⭐ (strongest methodology result)
+Four models trained (XGBoost, LightGBM, CatBoost, RandomForest), each
+originally using their library's **native full-strength auto-balancing**
+(`scale_pos_weight` at full ratio, `is_unbalance=True`,
+`auto_class_weights='Balanced'`, `class_weight='balanced'`). All four were
+found to **over-correct** — pushing recall up and precision/PR-AUC down.
+
+**Fix applied uniformly:** explicit mild class weighting at
+`√(n_neg/n_pos)` ≈ 7.39 instead of the full ratio (54.65), for all four
+models. This consistently outperformed native auto-balancing:
+
+| Model | PR-AUC (native auto-balance) | PR-AUC (mild √ratio weight) |
+|---|---|---|
+| XGBoost | 0.0672 | **0.0698** |
+| LightGBM | 0.0556 → 0.0610 (is_unbalance) | **0.0678** |
+| CatBoost | 0.0676 → 0.0677–0.0682 (Balanced) | **0.0709** |
+| RandomForest | 0.0592 | **0.0630** |
+
+This is a clean, generalizable, four-model-consistent ablation — worth its
+own subsection in the paper.
+
+Also fixed along the way: an early attempt at focal loss for XGBoost was
+abandoned (custom gradient/hessian was numerically unstable in float32 —
+finite-difference step size too small, produced garbage gradients); LightGBM
+early-stopping was silently tracking the wrong metric (first metric in a
+multi-metric list, not the best one) until narrowed to a single metric
+(`average_precision`).
+
+### Phase 6 — Stacking Ensemble
+- Meta-learner: LogisticRegression on 4 base models' predictions
+- **Fixed a real leakage bug:** original version fit the meta-learner on val
+  predictions and then scored it on the *same* val predictions (not a valid
+  validation). Rebuilt with proper 5-fold **out-of-fold** meta-training.
+- Also fixed a `fillna(0)` vs MICE-imputer confusion for test-time NaN
+  handling — resolved by matching train/val's existing `fillna(0)`
+  convention for structural NaNs, not introducing a mismatched treatment.
+
+**Final honest results:**
+- Out-of-fold val PR-AUC: **0.0736** (above baseline 0.0714)
+- Test PR-AUC: **0.0702** (essentially flat vs. baseline — reported honestly,
+  not oversold)
+- Test ROC-AUC: **0.7838** (baseline 0.7598) ✅ clear improvement
+- Test Recall: **65.6%** (baseline 55.25%) ✅ clear improvement
+
+### Phase 7 — Probability Calibration
+- Platt vs Isotonic compared → Isotonic selected
+- Test: Brier 0.0171, ECE 0.0007–0.0009 (well-calibrated)
+- The base paper does **no calibration at all** — a genuine gap we close
+
+### Phase 8 — Clinical Threshold Selection
+- Rule: minimize alarm rate subject to sensitivity ≥ 60%
+- Selected threshold: 0.0262
+- Test: Sensitivity 65.6%, Specificity 76.9%, Precision 4.9%, Alarm rate
+  23.9% (~1 true alert per ~20 false ones — expected consequence of 1.8%
+  base rate + 60% recall floor, reported honestly, not hidden)
+
+**A full clean end-to-end rerun (Phases 5→8) was done today after finding
+several stale-file bugs during debugging — confirmed reproducible, numbers
+above are the final, trustworthy ones.**
+
+---
+
+## 2. Debugging Notes Worth Remembering
+- Several rounds of edits not landing / files getting cross-contaminated
+  between scripts during manual editing — always verify a printed
+  config/header line matches the intended change before trusting a run's
+  output.
+- Stale intermediate files (e.g. old `stack_val_preds.npy` after switching
+  to `stack_oof_val_preds.npy`) caused a serious silent bug (val/test
+  threshold mismatch: 75% vs 0.2% sensitivity) — resolved, and a full
+  clean-slate rerun was done to confirm no other stale files remain.
+
+---
+
+## 3. Final Baseline vs Enhanced Comparison (for the paper)
+
+| Metric | Baseline | Enhanced (Test) | Change |
+|---|---|---|---|
+| ROC-AUC | 0.7598 | **0.7838** | ✅ +0.024 |
+| PR-AUC | 0.0714 | **0.0702** (test) / 0.0736 (val OOF) | ≈ flat |
+| Sensitivity | 55.25% | **65.6%** | ✅ +10.3pp |
+| Precision | — | 4.91% | — |
+| Alarm Rate | — | 23.9% | — |
+
+**Honest framing for the paper:** ROC-AUC and recall clearly improve;
+PR-AUC is essentially matched rather than clearly beaten — report both val
+and test numbers, don't cherry-pick. Combined with calibration and
+interpretability (once done) that the base paper lacks, this is a
+defensible result for a mid-tier venue submission.
+
+---
+
+## 4. SOFA / Clinical Score Decision
+The base paper's SOFA score needs 6 components: respiratory (PaO2/FiO2),
+coagulation (platelets), liver (bilirubin), cardiovascular (MAP +
+vasopressor dose), CNS (GCS), renal (creatinine + urine output). Our
+19-column feature set is **missing bilirubin, GCS, creatinine, urine
+output, and vasopressor data** — a full/faithful SOFA replication is not
+possible and was ruled out (would misrepresent what's being computed).
+
+**Decided direction:** use **SIRS** (fully computable — Temp, HR, Resp, WBC
+all present) as the primary composite clinical score, plus a **2-component
+modified qSOFA** (Resp≥22, SBP≤100 — missing the GCS-based altered-mental-
+status component, to be explicitly disclosed as a limitation). Not yet
+implemented in code — deprioritized below Phase 9/external validation per
+current plan, but the reasoning and choice are locked in.
+
+---
+
+## 5. What We're Doing Next (in order)
+
+1. **External validation split (setA vs setB)** ← starting now
+   - PhysioNet 2019 data combines two hospital systems (setA and setB).
+     Currently pooled into one 70/15/15 patient-level split. Plan: check
+     whether setA/setB origin survives in the data, and if so, re-split so
+     setA trains and setB tests (or report both), directly mirroring the
+     base paper's MIMIC-IV→eICU external validation — their headline
+     methodological strength. Low additional modeling cost, high value for
+     rigor.
+
+2. **Phase 9 — Explainability (SHAP)**
+   - Global SHAP (TreeExplainer) on best base model (CatBoost, PR-AUC
+     0.0709) — directly comparable to the base paper's beeswarm plot
+   - Stretch goal: SHAP importance at different points in ICU-LOS (e.g.
+     hour t-12 vs t-6 vs t-1 before onset) — shows feature importance
+     shifting as a patient approaches onset, something the base paper's
+     static model structurally cannot do. This is our strongest
+     interpretability novelty claim.
+
+3. **Frontend + Backend (after Phase 9)**
+   - Open stack choice (not mandated by course) — leaning FastAPI backend
+     (wraps existing saved models/transformers, replicates the Phase
+     2→8 inference pipeline for new uploads) + React frontend
+   - Scope: CSV/vitals upload → live risk prediction + SHAP explanation +
+     risk category, not just a static dashboard
+   - Backend is the harder/more important half — must replicate training
+     preprocessing exactly to avoid train/serve skew
+
+4. **LSTM as a 5th base model** (if time permits)
+   - Best remaining lever to genuinely move PR-AUC past baseline rather
+     than just matching it (feature/threshold tuning alone is unlikely to
+     get there)
+   - Real scope: patient-level sequence construction (padded/masked),
+     raw (not pre-engineered) features per timestep, causal-safe, mild
+     class weighting (~7.39, consistent with the rest of the ablation),
+     integrate its predictions as a 5th column into the stack
+   - Honest expectation: plausible meaningful PR-AUC gain, not guaranteed
+
+5. **qSOFA/SIRS features + feature reduction (150→80)** (if time permits)
+   - Lower expected impact than the above, useful for methodology-section
+     depth and one more ablation table, but shouldn't block writing
+
+6. **Write the paper**
+   - Structure: Data & Task → Preprocessing → Temporal Feature Engineering
+     → Feature Selection → Base Models & Imbalance Ablation → Stacking
+     (leak-safe) → Calibration → Clinical Threshold Selection → (SIRS/qSOFA
+     if done) → Interpretability (SHAP) → Results → Discussion (honest
+     PR-AUC framing) → external validation results
+   - Explicit framing throughout: this extends the base paper's static,
+     retrospective mortality-prediction paradigm to real-time, temporal,
+     causal sepsis-onset prediction — a harder, more clinically actionable
+     task, at a harder class-imbalance level (1.8% vs their ~12%)
+
+---
+
+*Last updated: end of today's debugging + planning session. Next action:
+check setA/setB tracking in Phase 1/2 code before re-spli
+
+
+## Phase 9 — Explainable AI (SHAP + LIME)
+
+**Goal**: explain *why* the model flags a patient as high-risk for sepsis,
+not just *that* it does — this is required for the paper's interpretability
+section (directly compared against the base paper's SHAP analysis).
+
+### What this phase does
+1. **Global SHAP beeswarm** — which features matter most across the whole
+   test set, on the CatBoost model (our best single base model).
+2. **Temporal SHAP** (this is our own addition, not in the base paper) —
+   shows whether feature importance changes between early ICU hours,
+   mid-stay, and late-stay. This is the key novelty argument: the base
+   paper's SOFA model only ever sees one static snapshot per patient, so
+   it structurally cannot show this. We can, because our pipeline is
+   temporal from the ground up.
+3. **Per-patient explanations** — pick one correctly-caught sepsis case
+   and one correctly-cleared non-sepsis case, explain both with SHAP
+   *and* LIME (two independent explanation methods) — useful for the
+   paper's "case study" figure and for sanity-checking that the model's
+   reasoning makes clinical sense.
+
+### How to run it
+```bash
+pip install shap lime --break-system-packages
+python enhanced/xai/explain.py
+```
+
+Takes a few minutes (SHAP on 500 patients + temporal binning + LIME).
+All outputs land in `enhanced/experiments/xai/`.
+
+### What to check after running
+- Open `global_shap_beeswarm.png` — sanity check: do the top features
+  make clinical sense (vitals like Resp/MAP/HR should dominate, similar
+  to the base paper's urine output/respiration rate findings)?
+- Open `temporal_shap_importance.png` — does anything meaningfully shift
+  between early/mid/late ICU stay? If yes, that's a good figure for the
+  paper's discussion section.
+- Open the two `patient_waterfall_*.png` and `patient_lime_*.png` pairs —
+  do SHAP and LIME roughly agree on what drove each prediction? If they
+  disagree a lot, flag it — worth discussing rather than hiding.
+
+### Known things to double check while running
+- If `explainer.expected_value` throws an error or looks like a list
+  instead of a single number, print it first (`print(explainer.expected_value)`)
+  — CatBoost's SHAP output format has changed across versions, may need
+  `expected_value[0]` instead of `expected_value` depending on your
+  installed `shap`/`catboost` versions.
+- If the run is slow, reduce `N_GLOBAL_SAMPLE` at the top of the script
+  (500 → 200) — global SHAP scales with sample size, temporal SHAP is
+  already capped per bin.
+
+### Don't touch
+- The `fillna(0)` calls in this script match the exact same convention
+  used everywhere else in the pipeline (structural NaN = "no history
+  yet") — do not swap this for any other imputation here, it needs to
+  stay consistent with how the models were trained.

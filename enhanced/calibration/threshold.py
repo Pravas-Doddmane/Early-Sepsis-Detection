@@ -29,7 +29,7 @@ MIN_SENSITIVITY = 0.60
 
 def load_val():
     """Load calibrated validation probabilities and labels."""
-    val_probs_raw = np.load(MODELS_DIR / "stack_val_preds.npy")
+    val_probs_raw = np.load(MODELS_DIR / "stack_oof_val_preds.npy")  # was stack_val_preds.npy (stale)
     calibrator = joblib.load(MODELS_DIR / "calibrator.pkl")
 
     calib_info = json.load(open(MODELS_DIR / "calibration_info.json"))
