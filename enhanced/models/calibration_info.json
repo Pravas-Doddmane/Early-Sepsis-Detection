@@ -1,0 +1,11 @@
+{
+  "type": "isotonic",
+  "val_brier_uncalibrated": 0.017399428961842153,
+  "val_brier_calibrated": 0.0172766797735587,
+  "val_ece_uncalibrated": 0.001496866126963508,
+  "val_ece_calibrated": 3.4651465687126277e-18,
+  "test_brier_uncalibrated": 0.017206641457501167,
+  "test_brier_calibrated": 0.017103017025337813,
+  "test_ece_uncalibrated": 0.0018389064957960893,
+  "test_ece_calibrated": 0.0008976121688603212
+}

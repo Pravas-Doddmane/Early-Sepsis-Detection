@@ -1,0 +1,5 @@
+{
+  "pr_auc": 0.0735780346970979,
+  "roc_auc": 0.7833929014937272,
+  "note": "out-of-fold estimate, not leaked val-on-val score"
+}

@@ -1,0 +1,32 @@
+{
+  "selection_rule": "min_alarm_rate_at_sensitivity>=0.6",
+  "min_sensitivity_target": 0.6,
+  "calibrator_type": "isotonic",
+  "optimal_threshold": 0.026202020202020202,
+  "val_metrics": {
+    "threshold": 0.026202020202020202,
+    "sensitivity": 0.6612517916865743,
+    "specificity": 0.7567887284155514,
+    "precision": 0.04783299923964886,
+    "f1": 0.08921262126534954,
+    "mcc": 0.1287131411985766,
+    "alarm_rate": 0.2507952742937878,
+    "tp": 2768.0,
+    "fp": 55100.0,
+    "fn": 1418.0,
+    "tn": 171452.0
+  },
+  "test_metrics": {
+    "threshold": 0.026202020202020202,
+    "sensitivity": 0.6559139784946236,
+    "specificity": 0.7686337026970521,
+    "precision": 0.04913806992105687,
+    "f1": 0.09142685851318945,
+    "mcc": 0.13200415106575197,
+    "alarm_rate": 0.23896667222771198,
+    "tp": 2745,
+    "fp": 53118,
+    "fn": 1440,
+    "tn": 176466
+  }
+}
