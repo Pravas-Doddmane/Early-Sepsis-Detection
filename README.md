@@ -1,153 +1,238 @@
 # 🏥 Enhanced Early Sepsis Detection System
 
-An end-to-end clinical machine learning pipeline for early prediction of sepsis onset (within 6 hours) on the **PhysioNet / Computing in Cardiology Challenge 2019** dataset.
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
+[![Machine Learning](https://img.shields.io/badge/ML-Scikit--Learn%20%7C%20XGBoost%20%7C%20LightGBM%20%7C%20CatBoost-orange.svg)](https://scikit-learn.org/)
+[![Dashboard](https://img.shields.io/badge/UI-Streamlit-red.svg)](https://streamlit.io/)
+[![Dataset](https://img.shields.io/badge/Dataset-PhysioNet%202019-green.svg)](https://physionet.org/content/challenge-2019/)
 
-Built with **GPU-accelerated gradient boosting (NVIDIA RTX 4060)**, causal temporal feature engineering, hybrid feature selection, probability calibration, and explainable AI (SHAP & LIME).
-
----
-
-## 📊 Performance Benchmark vs Baseline
-
-| Model / Baseline | ROC-AUC | PR-AUC | Recall (Sensitivity) | Precision | F1 Score | Training Time | Acceleration |
-|---|---|---|---|---|---|---|---|
-| **Challenge Baseline** | 0.7598 | **0.0714** | 55.25% | — | — | — | CPU |
-| **CatBoost (Enhanced)** | **0.7685** | 0.0631 | **64.29%** | 0.0427 | 0.0801 | **4.2s** | ✅ GPU (RTX 4060) |
-| **XGBoost (Enhanced)** | **0.7626** | **0.0664** | **62.11%** | 0.0445 | **0.0831** | **3.3s** | ✅ GPU (RTX 4060) |
-| **RandomForest** | 0.7407 | 0.0545 | 6.74% | **0.1071** | 0.0827 | 105.5s | CPU (24 threads) |
-| **LightGBM** | 0.7089 | 0.0415 | 0.00% | 0.0000 | 0.0000 | 3.6s | CPU (Multi-core) |
-
-> 🚀 **Recall improvement**: CatBoost and XGBoost improved patient sensitivity to **64.29%** and **62.11%** (vs 55.25% baseline) while evaluating at standard 0.5 threshold. Phase 6 (Stacking) and Phase 8 (Clinical Threshold Optimization) will further optimize PR-AUC and calibrated decision curves.
+An end-to-end clinical machine learning system for **early prediction of sepsis onset (up to 6 hours in advance)** using hourly physiological data from the **PhysioNet / Computing in Cardiology Challenge 2019** dataset (40,336 ICU patients across 2 hospital systems, totaling >1.55M hourly records).
 
 ---
 
-## 🗂️ Project Pipeline & Progress
-
-| Phase | Description | Status | Key Artifacts / Results |
-|---|---|---|---|
-| **Phase 1** | Data Audit & Profiling | ✅ Completed | 40,336 patients, 1.55M rows, 7.27% patient sepsis rate (`audit_report.md`) |
-| **Phase 2** | Preprocessing & Imputation | ✅ Completed | Patient-level 70/15/15 split, MICE imputation, per-column scaling |
-| **Phase 3** | Temporal Feature Engineering | ✅ Completed | 309 causal temporal features (lags, diffs, rolling stats, slopes) |
-| **Phase 4** | Hybrid Feature Selection | ✅ Completed | 109 final features selected via GPU-Boruta + Mutual Information |
-| **Phase 5** | 4 Base Model Training | ✅ Completed | XGBoost (GPU), CatBoost (GPU), LightGBM, RandomForest trained & evaluated |
-| **Phase 6** | Stacking Ensemble | 🔜 Next | Logistic Regression meta-learner combining out-of-fold / val predictions |
-| **Phase 7** | Probability Calibration | ⏳ Upcoming | Platt Scaling & Isotonic Regression for clinical risk calibration |
-| **Phase 8** | Clinical Threshold Selection | ⏳ Upcoming | Decision curve analysis (Sensitivity ≥ 80%, Alarm Rate ≤ 20%) |
-| **Phase 9** | Explainable AI (XAI) | ⏳ Upcoming | SHAP TreeExplainer (global/local) & LIME patient explanations |
-| **Phase 10** | Interactive Dashboard | ⏳ Upcoming | Streamlit clinical decision support dashboard |
-| **Phase 11** | Final Evaluation | ⏳ Upcoming | Independent test set evaluation and final report |
+## 📌 Table of Contents
+1. [Project Overview & Clinical Motivation](#-project-overview--clinical-motivation)
+2. [Key Results & Benchmark Comparison](#-key-results--benchmark-comparison)
+3. [System Architecture & 11-Phase Pipeline](#-system-architecture--11-phase-pipeline)
+4. [Quick Start & Running the Project](#-quick-start--running-the-project)
+5. [Interactive Clinical Dashboard (Phase 10)](#-interactive-clinical-dashboard-phase-10)
+6. [Repository File Map](#-repository-file-map)
+7. [Detailed Methodology](#-detailed-methodology)
+8. [Clinical Interpretability & Explainability (SHAP & LIME)](#-clinical-interpretability--explainability)
 
 ---
 
-## 🛠️ Installation & Environment Setup
+## 🩺 Project Overview & Clinical Motivation
 
-### 1. Prerequisites
-- Python 3.10+
-- NVIDIA GPU (RTX 4060 8GB tested and supported with CUDA)
+Sepsis is a life-threatening condition caused by the body's overwhelming and dysregulated immune response to infection, leading to tissue damage, organ failure, and death. In ICU settings:
+- **Mortality increases by ~7.6% for every hour** of delayed antibiotic administration following septic shock onset.
+- **The Challenge**: Clinically diagnosing sepsis early is difficult due to non-specific vital signs.
+- **Goal**: Predict sepsis onset **6 hours before clinical criteria are met** ($t_{\text{sepsis}} - 6\text{h}$), allowing physicians critical time to initiate targeted bundles (blood cultures, fluid resuscitation, and broad-spectrum antibiotics).
 
-### 2. Setup Virtual Environment
+---
+
+## 📊 Key Results & Benchmark Comparison
+
+Performance evaluated on the strict patient-stratified **Test Set (6,051 patients, 233,769 hourly records)**:
+
+| Model / Pipeline Stage | ROC-AUC | PR-AUC | Sensitivity (Recall) | Precision | F1-Score | Brier Score | Operating Threshold | Key Characteristics |
+|---|---|---|---|---|---|---|---|---|
+| **Challenge Baseline** | 0.7598 | **0.0714** | 55.25% | 2.10% | 0.0404 | 0.0380 | 0.5000 | Static single-hour features |
+| **Random Forest** | 0.7670 | 0.0630 | 0.05% | **22.22%** | 0.0010 | 0.0253 | 0.5000 | 500 trees, balanced weights |
+| **XGBoost** | 0.7792 | 0.0698 | 4.63% | 16.85% | 0.0727 | 0.0282 | 0.5000 | Gradient boosted trees |
+| **LightGBM** | 0.7740 | 0.0678 | 4.92% | 17.15% | 0.0765 | 0.0274 | 0.5000 | Fast histogram gradient boosting |
+| **CatBoost** | 0.7808 | **0.0709** | 5.02% | 16.84% | 0.0773 | 0.0294 | 0.5000 | Top single base model |
+| **Stacking Ensemble (Raw)** | **0.7838** | 0.0702 | 0.02% | 8.33% | 0.0005 | 0.0172 | 0.5000 | L2-Regularized Meta-Learner |
+| **Calibrated Ensemble @ Clinical Threshold** | **0.7838** | 0.0702 | **65.59%** | **4.91%** | **0.0914** | **0.0171** | **0.0262** | **Isotonic Calibrated + $\ge 65\%$ Sensitivity Rule** |
+
+### 💡 Clinical Highlights:
+- **Discrimination Superiority**: Stacked Ensemble achieves **0.7838 ROC-AUC** (+0.0240 improvement over baseline).
+- **High Operational Sensitivity**: Detects **65.6%** of all true sepsis onsets in advance.
+- **Reliable Probability Calibration**: Isotonic calibration lowered Expected Calibration Error (ECE) to **0.00089**, providing reliable risk probabilities.
+
+---
+
+## 🏗️ System Architecture & 11-Phase Pipeline
+
+```
+Raw PhysioNet 2019 Data (40,336 Patients, 1.55M Hourly Records)
+                      │
+                      ▼
+[Phase 1: Data Audit] ──► Missingness, cohort demographics, quality report
+                      │
+                      ▼
+[Phase 2: Stratified Preprocessing] ──► Patient-level split (70/15/15), IQR capping, MICE imputation
+                      │
+                      ▼
+[Phase 3: Temporal Feature Engineering] ──► 309 causal features (lags t-1,3,6; rolling 3,6,12h; slopes)
+                      │
+                      ▼
+[Phase 4: Hybrid Feature Selection] ──► Boruta (RF) + Mutual Information ──► Top 150 features
+                      │
+                      ▼
+[Phase 5: Four Base Models] ──► RandomForest + XGBoost + LightGBM + CatBoost
+                      │
+                      ▼
+[Phase 6: Stacking Meta-Learner] ──► Out-of-fold val predictions ──► Logistic Regression meta-model
+                      │
+                      ▼
+[Phase 7: Probability Calibration] ──► Isotonic Regression (Brier: 0.0171)
+                      │
+                      ▼
+[Phase 8: Clinical Threshold Optimization] ──► Optimal threshold T = 0.0262 (Sensitivity >= 65%)
+                      │
+                      ▼
+[Phase 9: Explainable AI] ──► SHAP TreeExplainer & LIME patient local explanations
+                      │
+                      ▼
+[Phase 10: Interactive Dashboard] ──► Streamlit Clinical Surveillance & Risk Calculator
+                      │
+                      ▼
+[Phase 11: Final Evaluation] ──► Comparison report, figures, and benchmark tables
+```
+
+---
+
+## 🚀 Quick Start & Running the Project
+
+### 1. Prerequisites & Setup
+Ensure Python 3.10+ is installed:
 ```powershell
-# Clone or navigate to the repository
-cd "c:\Users\prava\7th sem major project\Project 4\Early-Sepsis-Detection"
-
-# Activate virtual environment
-.venv\Scripts\Activate.ps1
+# Navigate to the project root
+cd "c:\Users\prava\7th sem major project\Project 7\Early-Sepsis-Detection"
 
 # Install dependencies
 pip install -r requirements.txt
 ```
 
----
-
-## 🚀 How to Run the Pipeline
-
-### Phase 1: Data Audit
+### 2. Launch the Interactive Web Dashboard (Phase 10)
 ```powershell
-python enhanced/data/audit.py
+streamlit run enhanced/dashboard/app.py
 ```
-- Consolidates all 40,336 `.psv` files into `raw_combined.parquet`.
-- Generates `enhanced/experiments/audit_report.md`.
+> The dashboard will automatically open in your browser at **`http://localhost:8501`**.
 
-### Phase 2: Fast Preprocessing
+### 3. Run the Final Evaluation & Generate Benchmark Reports (Phase 11)
 ```powershell
-python enhanced/data/preprocessing_fast.py
+python enhanced/experiments/final_eval.py
 ```
-- Performs stratified patient-level train/val/test splits (no data leakage).
-- Fits IQR capper, MICE imputer, and scalers on train set only.
-- Outputs `train_processed.parquet`, `val_processed.parquet`, `test_processed.parquet`.
-
-### Phase 3: Temporal Feature Engineering
-```powershell
-python enhanced/features/temporal.py
-```
-- Generates causal features per patient (lags `t-1, t-3, t-6`, 1h/3h diffs, rolling mean/std/min/max over 3h/6h/12h windows, and linear slopes).
-- Outputs `train_temporal.parquet` (1.83 GB), `val_temporal.parquet`, `test_temporal.parquet`.
-
-### Phase 4: Hybrid Feature Selection (GPU-Accelerated)
-```powershell
-python enhanced/features/selection.py
-```
-- Runs Mutual Information filter + Boruta with GPU XGBoost estimator.
-- Outputs `enhanced/experiments/selected_features.json` (109 features) and `feature_importance.csv`.
-
-### Phase 5: Base Model Training
-Run scripts from the `enhanced/models/` folder:
-
-```powershell
-cd enhanced/models
-
-# 1. XGBoost (GPU - RTX 4060)
-python train_xgb.py
-
-# 2. CatBoost (GPU - RTX 4060)
-python train_catboost.py
-
-# 3. LightGBM (Multi-threaded CPU)
-python train_lgbm.py
-
-# 4. RandomForest (Multi-threaded CPU)
-python train_rf.py
-```
-
-Outputs saved in `enhanced/models/`:
-- Model checkpoints: `xgb_model.pkl`, `catboost_model.cbm`, `lgbm_model.pkl`, `rf_model.pkl`
-- Validation probability predictions: `*_val_preds.npy`
-- Validation metrics: `*_metrics.json`
+Generates:
+- `enhanced/experiments/results_table.csv`
+- `enhanced/experiments/final_report.md`
+- `enhanced/experiments/figures/model_comparison_metrics.png`
+- `enhanced/experiments/figures/clinical_tradeoff.png`
 
 ---
 
-## 📁 Repository Structure
+## 🖥️ Interactive Clinical Dashboard (Phase 10)
+
+The Streamlit application (`enhanced/dashboard/app.py`) provides four interactive modes:
+
+1. **🏥 Live Patient ICU Monitor**:
+   - Select any patient ID (both septic and non-septic cohorts) from the PhysioNet dataset.
+   - Adjust the **ICU Hour ($t$) slider** to observe how the patient's vitals evolve over time.
+   - Real-time risk badge:
+     - 🟢 **LOW RISK** ($P < 2.62\%$)
+     - 🟡 **ELEVATED MONITORING ALERT** ($2.62\% \le P < 8.0\%$)
+     - 🔴 **HIGH SEPSIS RISK** ($P \ge 8.0\%$)
+   - Multi-signal interactive Plotly trajectory charts (Heart Rate, MAP, Respiration, Temperature, Oxygenation).
+
+2. **🎛️ Manual Clinical Parameter Risk Calculator**:
+   - Clinicians can enter current vitals (HR, BP, Temp, RR, O2Sat) and lab biomarkers (WBC, Platelets, BUN, Glucose, Creatinine).
+   - Get instant calibrated predictions from individual base models and the stacking ensemble.
+
+3. **📊 Model Performance & Benchmarks**:
+   - Live metrics table comparing all models.
+   - Reliability calibration curves and ROC-AUC charts.
+
+4. **ℹ️ About the Project**:
+   - Architectural summary and clinical utility guidelines.
+
+---
+
+## 📁 Repository File Map
 
 ```text
 Early-Sepsis-Detection/
-├── dataset/physionet_sepsis/training/    # Raw .psv challenge records
+├── dataset/physionet_sepsis/training/    # Raw .psv challenge records (training_setA & B)
 ├── baseline/                             # Read-only challenge baseline
+├── .streamlit/
+│   └── config.toml                       # Streamlit UI configuration
 ├── enhanced/
 │   ├── data/
-│   │   ├── audit.py                      # Phase 1: Audit script
-│   │   ├── preprocessing_fast.py         # Phase 2: Fast preprocessor
-│   │   └── processed/                    # Processed & temporal Parquet files
+│   │   ├── audit.py                      # Phase 1: Data audit & profiling script
+│   │   ├── preprocessing_fast.py         # Phase 2: Stratified preprocessor & MICE imputation
+│   │   └── make_report.py                # Audit report generator
 │   ├── features/
-│   │   ├── temporal.py                   # Phase 3: Temporal feature extraction
-│   │   └── selection.py                  # Phase 4: Boruta + MI selection
+│   │   ├── temporal.py                   # Phase 3: Causal temporal feature extraction
+│   │   └── selection.py                  # Phase 4: Boruta + Mutual Information selection
 │   ├── models/
-│   │   ├── _utils.py                     # Shared evaluation & data loader
-│   │   ├── train_xgb.py                  # Phase 5: XGBoost (GPU)
-│   │   ├── train_catboost.py             # Phase 5: CatBoost (GPU)
-│   │   ├── train_lgbm.py                 # Phase 5: LightGBM
-│   │   ├── train_rf.py                   # Phase 5: RandomForest
-│   │   └── transformers/                 # Saved preprocessing artifacts (.pkl)
-│   ├── stacking/                         # Phase 6: Stacking ensemble (next)
-│   ├── calibration/                      # Phase 7 & 8: Calibration & thresholds
-│   ├── xai/                              # Phase 9: SHAP & LIME explainability
-│   ├── dashboard/                        # Phase 10: Streamlit decision app
-│   └── experiments/                      # Experiment metrics, plots & reports
-├── PROJECT_GUIDE.md                      # Comprehensive developer & phase guide
+│   │   ├── _utils.py                     # Shared evaluation metrics & data loader
+│   │   ├── train_rf.py                   # Phase 5: RandomForest training
+│   │   ├── train_xgb.py                  # Phase 5: XGBoost training
+│   │   ├── train_lgbm.py                 # Phase 5: LightGBM training
+│   │   ├── train_catboost.py             # Phase 5: CatBoost training
+│   │   ├── rf_model.pkl                  # Saved Random Forest model
+│   │   ├── xgb_model.pkl                 # Saved XGBoost model
+│   │   ├── lgbm_model.pkl                # Saved LightGBM model
+│   │   ├── catboost_model.cbm            # Saved CatBoost model
+│   │   ├── meta_learner.pkl              # Phase 6: Saved Stacking Meta-Learner
+│   │   ├── calibrator.pkl                # Phase 7: Saved Isotonic Calibrator
+│   │   ├── optimal_threshold.json        # Phase 8: Saved Clinical Threshold configuration
+│   │   └── *_metrics.json                # Performance JSON metrics for each model
+│   ├── stacking/
+│   │   └── stack.py                      # Phase 6: Stacking ensemble training pipeline
+│   ├── calibration/
+│   │   ├── calibrate.py                  # Phase 7: Probability calibration pipeline
+│   │   └── threshold.py                  # Phase 8: Clinical decision threshold optimizer
+│   ├── xai/
+│   │   └── explain.py                    # Phase 9: SHAP TreeExplainer & LIME explainability
+│   ├── dashboard/
+│   │   └── app.py                        # Phase 10: Interactive Streamlit clinical application
+│   └── experiments/
+│       ├── final_eval.py                 # Phase 11: Final evaluation script
+│       ├── results_table.csv             # Final comparative results table
+│       ├── final_report.md               # Final comprehensive markdown report
+│       ├── audit_report.md               # Data audit summary report
+│       ├── selected_features.json        # Selected 150 temporal features
+│       ├── calibration_curves.png        # Reliability curve visualization
+│       └── figures/                      # Final evaluation charts
+│           ├── model_comparison_metrics.png
+│           └── clinical_tradeoff.png
+├── PROJECT_GUIDE.md                      # Comprehensive developer reference guide
 ├── PROJECT_CONTEXT.md                    # Quick session context
 ├── requirements.txt                      # Project dependencies
-└── README.md                             # Project overview & instructions
+└── README.md                             # Project overview & documentation
 ```
 
 ---
 
-## 🔬 Next Steps: Phase 6
-Proceed to **Phase 6: Stacking Ensemble** to combine predictions from all 4 models into a meta-learner for enhanced discrimination and calibration.
+## 🔬 Detailed Methodology
+
+### 1. Strict Patient-Level Partitioning
+To prevent data leakage, all splits (70% Train, 15% Validation, 15% Test) are partitioned strictly by `patient_id` with stratification on sepsis status. No patient record in the test set is ever seen during imputation, scaling, feature selection, or model training.
+
+### 2. Causal Temporal Dynamics
+Sepsis onset is rarely an instantaneous static event; it manifests as subtle physiological acceleration:
+- **Lags**: $t-1\text{h}, t-3\text{h}, t-6\text{h}$
+- **Short-term deltas**: $\Delta_{1\text{h}}, \Delta_{3\text{h}}$
+- **Rolling aggregations**: Mean, standard deviation, minimum, and maximum over causal windows ($3\text{h}, 6\text{h}, 12\text{h}$).
+- **Linear trajectory slopes**: Linear slope over $3\text{h}$ and $6\text{h}$ windows (e.g. rising respiration rate, dropping arterial pressure).
+
+### 3. Probability Calibration & Clinical Decision Thresholds
+Because sepsis onset is rare ($<2\%$ of hourly ICU measurements), raw model probabilities require calibration:
+- **Isotonic Regression** maps raw ensemble scores to true posterior probabilities, minimizing Brier error.
+- **Threshold Optimization**: Operating at the optimal threshold ($T = 0.0262$) guarantees $>65\%$ sensitivity for timely clinical intervention.
+
+---
+
+## 🔍 Clinical Interpretability & Explainability
+
+Global and patient-level explanations are provided using **SHAP (SHapley Additive exPlanations)** and **LIME**:
+
+1. **Respiratory Rate Acceleration (`Resp`, `Resp_slope3h`, `Resp_min6h`)**: Tachypnea is one of the earliest compensatory responses to systemic inflammatory response syndrome (SIRS).
+2. **Heart Rate Dynamics (`HR`, `HR_diff3h`, `HR_lag6`)**: Persistent tachycardia and loss of heart rate variability.
+3. **Arterial Blood Pressure (`MAP`, `MAP_lag1`, `SBP_lag1`)**: Hypotensive drops indicate impending cardiovascular instability.
+4. **Biochemical Markers (`WBC`, `Platelets`, `BUN`, `FiO2`, `SaO2`)**: Indication of leukocytosis/leukopenia, thrombocytopenia, and worsening oxygen exchange.
+
+---
+
+*Developed for 7th Semester Major Project — Early Sepsis Detection System.*

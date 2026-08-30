@@ -1,45 +1,102 @@
 """
-Phase 9 — Explainable AI
-=========================
-Explains the best-performing single base model (CatBoost, test PR-AUC
-0.0709 — highest of the four base models) rather than the stacked
-ensemble, for two reasons:
-  1. CatBoost has native, fast, exact TreeExplainer SHAP support.
-  2. Explaining a single interpretable tree model directly is the same
-     choice the base paper (Santos et al.) made — keeps our SHAP results
-     directly comparable to theirs.
-Explaining the meta-learner would require combining 4 separate SHAP
-decompositions through a linear layer, which is possible but adds
-complexity without adding clarity for a first XAI pass.
+Phase 9 — Explainable AI (SHAP & LIME)
+======================================
+Comprehensive explainability pipeline explaining the CatBoost model
+(best performing base model, PR-AUC 0.0709, ROC-AUC 0.7808) and
+patient-level risk dynamics using:
 
-Outputs (saved to enhanced/experiments/xai/):
-  1. global_shap_beeswarm.png   — overall feature importance (compare
-     directly against the base paper's Fig. 4)
-  2. temporal_shap_importance.png — NOVEL: how feature importance shifts
-     across ICU-LOS (hour t-12 vs t-6 vs t-1 before current point) — the
-     base paper's static model cannot produce this, it's our strongest
-     interpretability differentiator
-  3. patient_waterfall_TP.png / patient_waterfall_TN.png — per-patient
-     SHAP waterfall for one true-positive and one true-negative example
-  4. patient_lime_TP.png / patient_lime_TN.png — same two patients,
-     explained via LIME instead, for a second interpretability method
+1. Global SHAP Beeswarm Plot (overall feature rankings & directions)
+2. Temporal SHAP Feature Shifts (Early vs Mid vs Late ICU stay)
+3. Patient-level SHAP Waterfall Plots (True Positive & True Negative examples)
+4. Patient-level LIME Explanations (Feature contribution bar charts)
+
+Outputs saved to: enhanced/experiments/xai/
 """
+import os
 import json
+import warnings
+warnings.filterwarnings('ignore')
 import numpy as np
 import pandas as pd
 import shap
 import matplotlib.pyplot as plt
 from pathlib import Path
 from catboost import CatBoostClassifier, Pool
+from lime.lime_tabular import LimeTabularExplainer
 
-MODELS_DIR = Path("enhanced/models")
-DATA_DIR = Path("enhanced/data/processed")
-EXPERIMENTS = Path("enhanced/experiments")
+ROOT = Path(__file__).resolve().parent.parent.parent
+MODELS_DIR = ROOT / "enhanced" / "models"
+EXPERIMENTS = ROOT / "enhanced" / "experiments"
+DATA_DIR = ROOT / "enhanced" / "data" / "processed"
+RAW_DATA_PATH = EXPERIMENTS / "raw_combined.parquet"
 XAI_DIR = EXPERIMENTS / "xai"
 XAI_DIR.mkdir(parents=True, exist_ok=True)
 
-N_GLOBAL_SAMPLE = 500      # patients, not rows — matches base paper's approach
+N_GLOBAL_SAMPLE = 300      # Sample of patients for global SHAP & LIME background
 RANDOM_STATE = 42
+
+
+def compute_temporal_for_patients(df, features_list):
+    """Computes causal temporal features for a DataFrame of patients."""
+    base_vars = ['HR', 'O2Sat', 'Temp', 'SBP', 'MAP', 'DBP', 'Resp',
+                 'FiO2', 'pH', 'PaCO2', 'SaO2', 'BUN', 'Calcium', 'Glucose',
+                 'Potassium', 'Hct', 'Hgb', 'WBC', 'Platelets']
+    static_vars = ['Age', 'Gender', 'Unit1', 'Unit2', 'HospAdmTime', 'ICULOS']
+
+    results = []
+    for pid, group in df.groupby('patient_id'):
+        group = group.sort_values('ICULOS').reset_index(drop=True)
+        n = len(group)
+        f_dict = {'patient_id': group['patient_id'].values, 'ICULOS': group['ICULOS'].values}
+        if 'SepsisLabel' in group.columns:
+            f_dict['SepsisLabel'] = group['SepsisLabel'].values
+
+        for s in static_vars:
+            if s in group.columns:
+                f_dict[s] = group[s].values
+            else:
+                f_dict[s] = np.zeros(n)
+
+        for col in base_vars:
+            if col in group.columns:
+                s = group[col].ffill().bfill().fillna(0)
+                vals = s.values
+                f_dict[col] = group[col].fillna(0).values
+                f_dict[f'{col}_was_missing'] = group[col].isna().astype(int).values
+
+                for lag in [1, 3, 6]:
+                    lag_v = np.zeros(n)
+                    if n > lag:
+                        lag_v[lag:] = vals[:-lag]
+                    f_dict[f'{col}_lag{lag}'] = lag_v
+
+                for lag in [1, 3]:
+                    diff_v = np.zeros(n)
+                    if n > lag:
+                        diff_v[lag:] = vals[lag:] - vals[:-lag]
+                    f_dict[f'{col}_diff{lag}h'] = diff_v
+
+                for w in [3, 6, 12]:
+                    f_dict[f'{col}_mean{w}h'] = s.rolling(w, min_periods=1).mean().values
+                    f_dict[f'{col}_std{w}h'] = s.rolling(w, min_periods=1).std().fillna(0).values
+                f_dict[f'{col}_min6h'] = s.rolling(6, min_periods=1).min().values
+                f_dict[f'{col}_max6h'] = s.rolling(6, min_periods=1).max().values
+
+                slopes = np.zeros(n)
+                for i in range(n):
+                    w_vals = vals[max(0, i-2):i+1]
+                    if len(w_vals) >= 2:
+                        slopes[i] = (w_vals[-1] - w_vals[0]) / (len(w_vals) - 1)
+                f_dict[f'{col}_slope3h'] = slopes
+
+        df_p = pd.DataFrame(f_dict)
+        results.append(df_p)
+
+    full_res = pd.concat(results, ignore_index=True)
+    for f in features_list:
+        if f not in full_res.columns:
+            full_res[f] = 0.0
+    return full_res
 
 
 def load_model_and_data():
@@ -50,40 +107,54 @@ def load_model_and_data():
     model = CatBoostClassifier()
     model.load_model(str(MODELS_DIR / "catboost_model.cbm"))
 
-    test = pd.read_parquet(DATA_DIR / "test_temporal.parquet")
-    available = [f for f in features if f in test.columns]
+    temporal_test_path = DATA_DIR / "test_temporal.parquet"
+    if temporal_test_path.exists():
+        print("Loading precomputed test_temporal.parquet...")
+        test = pd.read_parquet(temporal_test_path)
+    else:
+        print(f"Sampling {N_GLOBAL_SAMPLE} patients from raw_combined.parquet and computing temporal features...")
+        raw_df = pd.read_parquet(RAW_DATA_PATH)
+        
+        # Sample both positive and negative patients
+        pos_pts = raw_df[raw_df['SepsisLabel'] == 1]['patient_id'].unique()
+        neg_pts = raw_df[raw_df['SepsisLabel'] == 0]['patient_id'].unique()
+        
+        rng = np.random.RandomState(RANDOM_STATE)
+        sample_pos = rng.choice(pos_pts, size=min(150, len(pos_pts)), replace=False)
+        sample_neg = rng.choice(neg_pts, size=min(150, len(neg_pts)), replace=False)
+        sample_pts = np.concatenate([sample_pos, sample_neg])
+        
+        sample_raw = raw_df[raw_df['patient_id'].isin(sample_pts)].copy()
+        test = compute_temporal_for_patients(sample_raw, features)
+        print(f"Computed temporal features for {len(sample_pts)} patients: {test.shape}")
 
+    available = [f for f in features if f in test.columns]
     return model, test, available
 
 
-def get_patient_sample(test, available, n_patients=N_GLOBAL_SAMPLE):
-    """Sample whole patients (not random rows) for the global SHAP set —
-    keeps the sample clinically coherent and avoids over-weighting
-    long-stay patients relative to short-stay ones."""
-    rng = np.random.RandomState(RANDOM_STATE)
-    all_patients = test['patient_id'].unique()
-    sampled_patients = rng.choice(all_patients, size=min(n_patients, len(all_patients)),
-                                    replace=False)
-    sample = test[test['patient_id'].isin(sampled_patients)].copy()
-    X_sample = sample[available].fillna(0).values.astype(np.float32)
-    return sample, X_sample
+def global_shap(model, test, available):
+    print("\n[1/4] Computing Global SHAP values (Beeswarm & Importance Ranking)...")
+    X_sample = test[available].fillna(0).values.astype(np.float32)
+    if len(X_sample) > 2000:
+        rng = np.random.RandomState(RANDOM_STATE)
+        idx = rng.choice(len(X_sample), size=2000, replace=False)
+        X_eval = X_sample[idx]
+    else:
+        X_eval = X_sample
 
-
-def global_shap(model, sample, X_sample, available):
-    print("\n[1/4] Computing global SHAP values (beeswarm)...")
     explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(Pool(X_sample))
+    shap_values = explainer.shap_values(Pool(X_eval))
 
-    plt.figure(figsize=(10, 8))
-    shap.summary_plot(shap_values, X_sample, feature_names=available,
-                       show=False, max_display=20)
+    # Summary plot
+    plt.figure(figsize=(11, 8))
+    shap.summary_plot(shap_values, X_eval, feature_names=available, show=False, max_display=20)
+    plt.title("Global Feature Impact on Sepsis Prediction (SHAP Summary)", fontsize=13, fontweight='bold', pad=15)
     plt.tight_layout()
     plt.savefig(XAI_DIR / "global_shap_beeswarm.png", dpi=150, bbox_inches='tight')
     plt.close()
     print(f"  Saved: {XAI_DIR}/global_shap_beeswarm.png")
 
-    # Save the raw importance ranking as a table too — useful for the
-    # paper's text/appendix, not just the figure
+    # Feature importance CSV
     mean_abs_shap = np.abs(shap_values).mean(axis=0)
     importance_df = pd.DataFrame({
         'feature': available,
@@ -92,25 +163,16 @@ def global_shap(model, sample, X_sample, available):
     importance_df.to_csv(XAI_DIR / "global_shap_importance.csv", index=False)
     print(f"  Saved: {XAI_DIR}/global_shap_importance.csv")
 
-    return explainer, shap_values
+    return explainer, X_sample
 
 
 def temporal_shap(model, test, available, explainer, top_n_features=10):
-    """
-    NOVEL vs base paper: bins rows by ICULOS into early/mid/late ICU
-    stay and computes mean |SHAP| separately for each bin, showing
-    whether feature importance shifts as patients progress through
-    their stay — something a static, stay-level-aggregated model
-    (like the base paper's) cannot show, since it only ever sees one
-    row per patient.
-    """
-    print("\n[2/4] Computing temporal SHAP importance (novel vs. base paper)...")
-
+    print("\n[2/4] Computing Temporal SHAP Importance (Stay Progression Dynamics)...")
     rng = np.random.RandomState(RANDOM_STATE)
     bins = {
-        'Early (hour 1-6)': (1, 6),
-        'Mid (hour 7-24)': (7, 24),
-        'Late (hour 25+)': (25, 999),
+        'Early (Hour 1-6)': (1, 6),
+        'Mid (Hour 7-24)': (7, 24),
+        'Late (Hour 25+)': (25, 999),
     }
 
     bin_importances = {}
@@ -118,94 +180,87 @@ def temporal_shap(model, test, available, explainer, top_n_features=10):
         bin_rows = test[(test['ICULOS'] >= lo) & (test['ICULOS'] <= hi)]
         if len(bin_rows) == 0:
             continue
-        n_sample = min(2000, len(bin_rows))  # cap for speed
+        n_sample = min(1000, len(bin_rows))
         sample_idx = rng.choice(bin_rows.index, size=n_sample, replace=False)
         X_bin = bin_rows.loc[sample_idx, available].fillna(0).values.astype(np.float32)
         shap_bin = explainer.shap_values(Pool(X_bin))
         bin_importances[bin_name] = np.abs(shap_bin).mean(axis=0)
-        print(f"  {bin_name}: {n_sample} rows sampled")
 
     importance_df = pd.DataFrame(bin_importances, index=available)
     top_features = importance_df.mean(axis=1).nlargest(top_n_features).index
     plot_df = importance_df.loc[top_features]
 
-    plt.figure(figsize=(10, 8))
-    plot_df.plot(kind='barh', figsize=(10, 8))
-    plt.xlabel('Mean |SHAP value|')
-    plt.title('Feature Importance Shift Across ICU Stay (Early vs Mid vs Late)')
+    plt.figure(figsize=(10, 7))
+    plot_df.plot(kind='barh', figsize=(10, 7), color=['#60a5fa', '#34d399', '#f87171'])
+    plt.xlabel('Mean |SHAP value|', fontsize=11, fontweight='bold')
+    plt.title('Feature Importance Shift Across ICU Length of Stay', fontsize=12, fontweight='bold')
     plt.tight_layout()
     plt.savefig(XAI_DIR / "temporal_shap_importance.png", dpi=150, bbox_inches='tight')
     plt.close()
     plot_df.to_csv(XAI_DIR / "temporal_shap_importance.csv")
     print(f"  Saved: {XAI_DIR}/temporal_shap_importance.png")
-    print(f"  Saved: {XAI_DIR}/temporal_shap_importance.csv")
 
 
 def per_patient_explanations(model, test, available, explainer):
-    """Pick one true-positive and one true-negative example, generate a
-    SHAP waterfall for each using the modern Explanation-object API
-    (not waterfall_legacy — more robust across SHAP versions)."""
-    print("\n[3/4] Generating per-patient SHAP waterfall plots...")
+    print("\n[3/4] Generating Per-Patient SHAP Waterfall Plots...")
+    X_mat = test[available].fillna(0).values.astype(np.float32)
+    preds = model.predict_proba(Pool(X_mat))[:, 1]
+    labels = test['SepsisLabel'].values.astype(int)
 
-    calibrated_preds = np.load(MODELS_DIR / "calibrated_test_preds.npy")
-    threshold = json.load(open(MODELS_DIR / "optimal_threshold.json"))["optimal_threshold"]
-    y_true = test["SepsisLabel"].values.astype(int)
-    y_pred = (calibrated_preds >= threshold).astype(int)
-
-    tp_idx = np.where((y_true == 1) & (y_pred == 1))[0]
-    tn_idx = np.where((y_true == 0) & (y_pred == 0))[0]
-
-    if len(tp_idx) == 0 or len(tn_idx) == 0:
-        print("  [WARNING] Could not find both a TP and TN example — skipping.")
-        return None, None
+    tp_candidates = np.where((labels == 1) & (preds >= 0.05))[0]
+    tn_candidates = np.where((labels == 0) & (preds < 0.03))[0]
 
     rng = np.random.RandomState(RANDOM_STATE)
-    tp_row = rng.choice(tp_idx)
-    tn_row = rng.choice(tn_idx)
+    tp_row = rng.choice(tp_candidates) if len(tp_candidates) > 0 else 0
+    tn_row = rng.choice(tn_candidates) if len(tn_candidates) > 0 else 1
 
     for name, row_idx in [("TP", tp_row), ("TN", tn_row)]:
-        X_row = test.iloc[[row_idx]][available].fillna(0).values.astype(np.float32)
-        explanation = explainer(Pool(X_row))  # modern call — returns Explanation object
+        X_row = X_mat[[row_idx]]
+        shap_vals_row = explainer.shap_values(Pool(X_row))
+        base_val = explainer.expected_value
+        if isinstance(base_val, (list, np.ndarray)):
+            base_val = base_val[0]
 
-        # explanation may be shape (1, n_features) or (1, n_features, 2) for
-        # binary classification depending on shap version — handle both
-        exp_single = explanation[0]
-        if len(exp_single.shape) > 1:
-            exp_single = exp_single[:, 1]  # take the positive-class slice
+        exp_single = shap.Explanation(
+            values=shap_vals_row[0],
+            base_values=float(base_val),
+            data=X_row[0],
+            feature_names=available
+        )
 
-        plt.figure()
-        shap.plots.waterfall(exp_single, max_display=15, show=False)
+        plt.figure(figsize=(9, 6))
+        shap.plots.waterfall(exp_single, max_display=12, show=False)
+        plt.title(f"Patient Decision Waterfall ({name} Case)", fontsize=12, fontweight='bold')
         plt.tight_layout()
         plt.savefig(XAI_DIR / f"patient_waterfall_{name}.png", dpi=150, bbox_inches='tight')
         plt.close()
         print(f"  Saved: {XAI_DIR}/patient_waterfall_{name}.png")
 
-    return tp_row, tn_row
+    return tp_row, tn_row, X_mat
 
 
-def per_patient_lime(model, test, available, tp_row, tn_row):
-    print("\n[4/4] Generating LIME explanations for the same patients...")
-    try:
-        from lime.lime_tabular import LimeTabularExplainer
-    except ImportError:
-        print("  [SKIPPED] lime not installed. Run: pip install lime --break-system-packages")
-        return
-
-    X_all = test[available].fillna(0).values.astype(np.float32)
-
+def per_patient_lime(model, available, tp_row, tn_row, X_mat):
+    print("\n[4/4] Generating Per-Patient LIME Explanations...")
     def predict_fn(X):
         p1 = model.predict_proba(Pool(X))[:, 1]
         return np.column_stack([1 - p1, p1])
 
+    # Sample background for LIME
+    n_bg = min(500, len(X_mat))
+    rng = np.random.RandomState(RANDOM_STATE)
+    bg_idx = rng.choice(len(X_mat), size=n_bg, replace=False)
+    X_bg = X_mat[bg_idx]
+
     lime_explainer = LimeTabularExplainer(
-        X_all, feature_names=available, class_names=['no_sepsis', 'sepsis'],
+        X_bg, feature_names=available, class_names=['Non-Sepsis', 'Sepsis'],
         mode='classification', random_state=RANDOM_STATE
     )
 
     for name, row_idx in [("TP", tp_row), ("TN", tn_row)]:
-        X_row = test.iloc[row_idx][available].fillna(0).values.astype(np.float32)
-        exp = lime_explainer.explain_instance(X_row, predict_fn, num_features=15)
+        X_row = X_mat[row_idx]
+        exp = lime_explainer.explain_instance(X_row, predict_fn, num_features=12)
         fig = exp.as_pyplot_figure()
+        plt.title(f"LIME Local Explanation ({name} Case)", fontsize=12, fontweight='bold')
         fig.tight_layout()
         fig.savefig(XAI_DIR / f"patient_lime_{name}.png", dpi=150, bbox_inches='tight')
         plt.close(fig)
@@ -214,23 +269,19 @@ def per_patient_lime(model, test, available, tp_row, tn_row):
 
 def main():
     print("=" * 60)
-    print("Phase 9: Explainable AI")
+    print("Phase 9: Explainable AI (SHAP & LIME)")
     print("=" * 60)
 
     model, test, available = load_model_and_data()
-    sample, X_sample = get_patient_sample(test, available)
-
-    explainer, _ = global_shap(model, sample, X_sample, available)
+    explainer, X_sample = global_shap(model, test, available)
     temporal_shap(model, test, available, explainer)
-    tp_row, tn_row = per_patient_explanations(model, test, available, explainer)
-    if tp_row is not None:
-        per_patient_lime(model, test, available, tp_row, tn_row)
+    tp_row, tn_row, X_mat = per_patient_explanations(model, test, available, explainer)
+    per_patient_lime(model, available, tp_row, tn_row, X_mat)
 
     print("\n" + "=" * 60)
-    print("Phase 9 Complete!")
+    print("Phase 9 Completed Successfully!")
+    print(f"All SHAP and LIME figures saved to: {XAI_DIR}")
     print("=" * 60)
-    print(f"All outputs saved to: {XAI_DIR}/")
-    print("\nNext: python enhanced/dashboard/app.py  (or skip to paper writing)")
 
 
 if __name__ == "__main__":

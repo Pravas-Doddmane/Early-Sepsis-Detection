@@ -1,171 +1,50 @@
-# Enhanced Sepsis Prediction - Project Context
+# Enhanced Sepsis Prediction — Project Context
 
 ## Objective
-Build an enhanced sepsis early prediction system on PhysioNet 2019 Challenge data, significantly improving upon the baseline (PR-AUC 0.0714, ROC-AUC 0.7598, Recall 55.25%).
+Build an enhanced early sepsis prediction system on the PhysioNet / Computing in Cardiology Challenge 2019 dataset, significantly improving discrimination, calibration, and clinical early warning capability over the baseline (PR-AUC 0.0714, ROC-AUC 0.7598, Recall 55.25%).
 
-## Data Source
-- **Dataset**: PhysioNet/Computing in Cardiology Challenge 2019
-- **Location**: `dataset/physionet_sepsis/training/` (training_setA, training_setB)
-- **Format**: Pipe-separated (.psv) hourly patient records
-- **Target**: `SepsisLabel` (binary, 1 = sepsis onset within 6 hours)
+---
 
-## Key Variables (40 columns)
-Vitals: HR, O2Sat, Temp, SBP, MAP, DBP, Resp, EtCO2
-Labs: BaseExcess, HCO3, FiO2, pH, PaCO2, SaO2, AST, BUN, Alkalinephos, Calcium, Chloride, Creatinine, Bilirubin_direct, Glucose, Lactate, Magnesium, Phosphate, Potassium, Bilirubin_total, TroponinI, Hct, Hgb, PTT, WBC, Fibrinogen, Platelets
-Static: Age, Gender, Unit1, Unit2, HospAdmTime
-Temporal: ICULOS (ICU length of stay in hours)
-Target: SepsisLabel
+## Final Project Status: 100% COMPLETE (Phases 1–11)
 
-## Non-Negotiable Rules
-1. **No Data Leakage**: Fit transformers/selection ONLY on Train → transform Val/Test
-2. **Patient-Level Splits**: Same patients never in multiple sets
-3. **Temporal Causality**: Features at hour t use only ≤ t
-4. **Preserve Baseline**: `baseline/` is read-only reference
+| Phase | Description | Key Artifacts | Status |
+|---|---|---|---|
+| **Phase 1: Data Audit** | Audited 40,336 patients, 1.55M rows | `raw_combined.parquet`, `audit_report.md` | ✅ Complete |
+| **Phase 2: Preprocessing** | Stratified 70/15/15 split, IQR capping, MICE | `train_processed.parquet`, transformers | ✅ Complete |
+| **Phase 3: Temporal Features** | 309 causal features (lags, rolling stats, slopes) | `train_temporal.parquet`, `val_temporal.parquet` | ✅ Complete |
+| **Phase 4: Feature Selection** | Boruta + Mutual Information | `selected_features.json` (150 features) | ✅ Complete |
+| **Phase 5: Base Models** | Trained RF, XGBoost, LightGBM, CatBoost | `*_model.pkl`, `*_model.cbm`, `*_metrics.json` | ✅ Complete |
+| **Phase 6: Stacking Ensemble** | LogisticRegression meta-learner (ROC-AUC 0.7838) | `meta_learner.pkl`, `stack_test_preds.npy` | ✅ Complete |
+| **Phase 7: Probability Calibration** | Isotonic Calibration (Brier: 0.0171, ECE: 0.00089) | `calibrator.pkl`, `calibration_info.json` | ✅ Complete |
+| **Phase 8: Threshold Optimization** | Optimal threshold $T = 0.0262$ (Sensitivity 65.6%) | `optimal_threshold.json` | ✅ Complete |
+| **Phase 9: Explainable AI** | SHAP TreeExplainer & LIME explanations | `enhanced/xai/explain.py` | ✅ Complete |
+| **Phase 10: Interactive Dashboard** | Streamlit Clinical Surveillance & Risk App | `enhanced/dashboard/app.py` | ✅ Complete |
+| **Phase 11: Final Evaluation** | Benchmark report, results table & figures | `results_table.csv`, `final_report.md`, figures | ✅ Complete |
 
-## Enhanced Pipeline Phases
+---
 
-### 1. Data Audit (`enhanced/data/audit.py`)
-- Load all .psv files from training_setA and training_setB
-- Patient-level statistics: missingness %, class balance, ICU stay lengths, variable distributions
-- Output: `experiments/audit_report.md`
+## Benchmark Results Comparison (Test Set)
 
-### 2. Preprocessing (`enhanced/data/preprocessing.py`)
-| Step | Method | Fit On | Apply To |
-|------|--------|--------|----------|
-| Missing values | Benchmark MICE / KNN / MissForest | Train | Train/Val/Test |
-| Outliers | IQR capping (1.5×IQR) | Train | Train/Val/Test |
-| Normalization | StandardScaler / RobustScaler | Train | Train/Val/Test |
-- Save fitted transformers (joblib)
+| Model | ROC-AUC | PR-AUC | Recall (Sensitivity) | Precision | F1-Score | Brier Score | Operating Threshold |
+|---|---|---|---|---|---|---|---|
+| **Challenge Baseline** | 0.7598 | **0.0714** | 55.25% | 2.10% | 0.0404 | 0.0380 | 0.5000 |
+| **Random Forest** | 0.7670 | 0.0630 | 0.05% | 22.22% | 0.0010 | 0.0253 | 0.5000 |
+| **XGBoost** | 0.7792 | 0.0698 | 4.63% | 16.85% | 0.0727 | 0.0282 | 0.5000 |
+| **LightGBM** | 0.7740 | 0.0678 | 4.92% | 17.15% | 0.0765 | 0.0274 | 0.5000 |
+| **CatBoost** | 0.7808 | 0.0709 | 5.02% | 16.84% | 0.0773 | 0.0294 | 0.5000 |
+| **Stacked Ensemble (Raw)** | **0.7838** | 0.0702 | 0.02% | 8.33% | 0.0005 | 0.0172 | 0.5000 |
+| **Calibrated Ensemble @ Clinical Threshold** | **0.7838** | 0.0702 | **65.59%** | **4.91%** | **0.0914** | **0.0171** | **0.0262** |
 
-### 3. Temporal Feature Engineering (`enhanced/features/temporal.py`)
-For each clinical variable (HR, MAP, Lactate, Temp, RR, SpO2, WBC, Creatinine, Platelets, Bilirubin, Urine, Glucose, Age, Gender...):
-- **Lags**: t-1, t-3, t-6
-- **Differences**: diff_1h, diff_3h, pct_change_1h
-- **Rolling (causal)**: mean_3h, mean_6h, mean_12h, std_3h, std_6h, min_6h, max_6h
-- **Trends**: Linear slope over 3h, 6h windows
-- **Constraint**: Only hours ≤ current hour (no leakage)
+---
 
-### 4. Hybrid Feature Selection (`enhanced/features/selection.py`)
-```
-All Features
-    │
-    ├─ Boruta (RF, n_iter=50) → selected_boruta
-    └─ Mutual Info (top k=100) → selected_mi
-    │
-    └─ Union → final_features (save list + importance CSV)
-```
+## How to Run
 
-### 5. Four Base Models (`enhanced/models/`)
-Train each on Train, evaluate on Val, save val predictions for stacking:
-| Model | Key Params |
-|-------|------------|
-| RandomForest | 500 trees, class_weight='balanced' |
-| XGBoost | scale_pos_weight, early_stopping=50 |
-| LightGBM | scale_pos_weight, early_stopping=50 |
-| CatBoost | scale_pos_weight, early_stopping=50 |
-Output per model: model.pkl, val_preds.npy, metrics.json
-
-### 6. Stacking Ensemble (`enhanced/stacking/stack.py`)
-- Meta-learner: LogisticRegression(C=1.0, class_weight='balanced', max_iter=1000)
-- Input: 4× val predictions (shape: n_samples × 4)
-- Train meta on Val → Predict on Test
-- Save: meta_learner.pkl, test_preds.npy
-
-### 7. Probability Calibration (`enhanced/calibration/calibrate.py`)
-Compare on Val only:
-- Platt (sigmoid/CalibratedClassifierCV)
-- Isotonic (CalibratedClassifierCV)
-- Select by Brier Score + calibration curve visual
-- Apply chosen calibrator to Test predictions
-- Save: calibrator.pkl, calibrated_test_preds.npy
-
-### 8. Clinical Threshold Selection (`enhanced/calibration/threshold.py`)
-On Val (calibrated):
-- Sweep thresholds → compute Sensitivity, Precision, F1, MCC, Alarm Rate
-- Choose threshold balancing clinical sensitivity vs alarm burden
-- Save: optimal_threshold.json
-
-### 9. Explainable AI (`enhanced/xai/explain.py`)
-| Method | Scope | Output |
-|--------|-------|--------|
-| SHAP (TreeExplainer) | Global (500-patient sample) | Summary plot, dependence plots, feature importance CSV |
-| SHAP | Local (per patient) | Waterfall/force plot |
-| LIME (TabularExplainer) | Local (per patient) | Bar chart of feature contributions |
-
-### 10. Interactive Dashboard (`enhanced/dashboard/app.py`)
-- Stack: Streamlit
-- Inputs: Patient ID + ICU hour (from dataset) OR Manual vitals entry
-- Outputs: Risk probability + category (LOW/MODERATE/HIGH), Timeline charts, SHAP global importance, LIME patient-specific explanation, Model metadata panel
-
-### 11. Final Evaluation (`enhanced/experiments/final_eval.py`)
-Compare Baseline (preserved) vs Enhanced on Test:
-
-| Metric | Baseline | Enhanced |
-|--------|----------|----------|
-| PR-AUC | 0.0714 | — |
-| ROC-AUC | 0.7598 | — |
-| Recall | 55.25% | — |
-| Precision | — | — |
-| F1 | — | — |
-| MCC | — | — |
-| Brier Score | — | — |
-
-- Calibration curves, decision curves
-- Cross-source evaluation if applicable
-- Generate: results_table.csv, figures/, report.md
-
-## Execution Order
-```bash
-# 1. Context + deps
-cd C:\PROJECT
-# create requirements.txt
-
-# 2. Data audit
-python enhanced/data/audit.py
-
-# 3. Preprocessing (fit on train only)
-python enhanced/data/preprocessing.py
-
-# 4. Temporal features
-python enhanced/features/temporal.py
-
-# 5. Feature selection
-python enhanced/features/selection.py
-
-# 6. Base models (4x parallelizable)
-python enhanced/models/train_rf.py
-python enhanced/models/train_xgb.py
-python enhanced/models/train_lgbm.py
-python enhanced/models/train_catboost.py
-
-# 7. Stacking
-python enhanced/stacking/stack.py
-
-# 8. Calibration + threshold
-python enhanced/calibration/calibrate.py
-python enhanced/calibration/threshold.py
-
-# 9. XAI
-python enhanced/xai/explain.py
-
-# 10. Dashboard
+### 1. Launch the Clinical Dashboard
+```powershell
 streamlit run enhanced/dashboard/app.py
+```
 
-# 11. Final eval
+### 2. Generate Final Evaluation Reports
+```powershell
 python enhanced/experiments/final_eval.py
-```
-
-## Deliverables
-```
-enhanced/
-├── models/                 # All saved .pkl artifacts
-├── experiments/
-│   ├── audit_report.md
-│   ├── feature_importance.csv
-│   ├── metrics_comparison.csv
-│   ├── calibration_curves.png
-│   ├── shap_summary.png
-│   └── final_report.md
-├── dashboard/app.py        # Runnable demo
-└── PROJECT_CONTEXT.md      # Context for next session
 ```
