@@ -143,8 +143,7 @@ def temporal_shap(model, test, available, explainer, top_n_features=10):
 
 def per_patient_explanations(model, test, available, explainer):
     """Pick one true-positive and one true-negative example, generate a
-    SHAP waterfall for each using the modern Explanation-object API
-    (not waterfall_legacy — more robust across SHAP versions)."""
+    SHAP waterfall for each using the modern Explanation-object API."""
     print("\n[3/4] Generating per-patient SHAP waterfall plots...")
 
     calibrated_preds = np.load(MODELS_DIR / "calibrated_test_preds.npy")
@@ -165,16 +164,30 @@ def per_patient_explanations(model, test, available, explainer):
 
     for name, row_idx in [("TP", tp_row), ("TN", tn_row)]:
         X_row = test.iloc[[row_idx]][available].fillna(0).values.astype(np.float32)
-        explanation = explainer(Pool(X_row))  # modern call — returns Explanation object
+        # Get SHAP values directly as array (not Explanation object)
+        shap_vals = explainer.shap_values(Pool(X_row))
 
-        # explanation may be shape (1, n_features) or (1, n_features, 2) for
-        # binary classification depending on shap version — handle both
-        exp_single = explanation[0]
-        if len(exp_single.shape) > 1:
-            exp_single = exp_single[:, 1]  # take the positive-class slice
+        # shap_vals shape: (1, n_features) for binary classification (positive class)
+        # or (1, n_features, 2) for both classes
+        if shap_vals.ndim == 3:
+            shap_vals = shap_vals[:, :, 1]  # take positive class
+
+        # Expected value (base value) for this prediction
+        expected_val = explainer.expected_value
+        if isinstance(expected_val, (list, np.ndarray)):
+            expected_val = expected_val[1] if len(expected_val) > 1 else expected_val[0]
 
         plt.figure()
-        shap.plots.waterfall(exp_single, max_display=15, show=False)
+        shap.plots.waterfall(
+            shap.Explanation(
+                values=shap_vals[0],
+                base_values=expected_val,
+                data=X_row[0],
+                feature_names=available
+            ),
+            max_display=15,
+            show=False
+        )
         plt.tight_layout()
         plt.savefig(XAI_DIR / f"patient_waterfall_{name}.png", dpi=150, bbox_inches='tight')
         plt.close()
