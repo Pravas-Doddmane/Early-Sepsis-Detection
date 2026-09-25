@@ -16,6 +16,10 @@ class _FixedClassifier:
     def predict_proba(self, _features):
         return np.array([[1 - self.probability, self.probability]])
 
+    def get_feature_importance(self, _features, type):
+        self.asserted_importance_type = type
+        return np.array([[0.25, -0.75, 1.5, 0.5]])
+
 
 class _FixedMetaLearner:
     def predict_proba(self, _features):
@@ -68,6 +72,20 @@ class ModelLoaderTests(unittest.TestCase):
         self.assertAlmostEqual(features["HR_slope3h"], 10.0)
         self.assertTrue(np.isnan(features["HR_lag3"]))
 
+    def test_temporal_features_allow_missing_static_patient_details(self):
+        processed = pd.DataFrame({
+            **{feature: [1.0] for feature in BASE_FEATURES},
+            "Age": [None],
+            "Gender": [None],
+            "Unit2": [None],
+        })
+
+        features = ModelLoader._engineer_last_row(processed)
+
+        self.assertTrue(np.isnan(features["Age"]))
+        self.assertTrue(np.isnan(features["Gender"]))
+        self.assertTrue(np.isnan(features["Unit2"]))
+
     def test_ensemble_returns_calibrated_probability(self):
         loader = object.__new__(ModelLoader)
         loader.models = {
@@ -91,6 +109,21 @@ class ModelLoaderTests(unittest.TestCase):
 
         self.assertEqual(probability, 0.03)
         self.assertEqual(model_scores["catboost"], 0.4)
+
+    def test_explanation_returns_largest_catboost_shap_drivers(self):
+        loader = object.__new__(ModelLoader)
+        catboost_model = _FixedClassifier(0.4)
+        loader.models = {"catboost": catboost_model}
+        loader.feature_names = ["HR", "Temp", "WBC"]
+        loader.preprocess_history = lambda _history: np.array([[0.1, 0.2, 0.3]])
+
+        with patch("app.services.model_loader.Pool", side_effect=lambda values: values):
+            explanations = loader.explain_history([{"iculos": 1, "features": {}}], top_n=2)
+
+        self.assertEqual(catboost_model.asserted_importance_type, "ShapValues")
+        self.assertEqual([item["feature"] for item in explanations], ["WBC", "Temp"])
+        self.assertEqual(explanations[1]["shap_value"], -0.75)
+        self.assertEqual(explanations[0]["feature_value"], 0.3)
 
     def test_saved_test_patient_matches_training_features_and_calibrated_prediction(self):
         required_files = [

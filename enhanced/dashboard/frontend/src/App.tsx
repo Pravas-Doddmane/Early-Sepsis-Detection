@@ -1,15 +1,11 @@
-import { Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Home, Users, Brain, Activity } from 'lucide-react';
-import Overview from './pages/Overview';
-import PatientExplorer from './pages/PatientExplorer';
-import Explainability from './pages/Explainability';
-import Predict from './pages/Predict';
+import { Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
+import { Home as HomeIcon, Activity } from 'lucide-react';
+import Home from './pages/Home';
+import Prediction from './pages/Prediction';
 
 const navigation = [
-  { path: '/', label: 'Overview', icon: Home },
-  { path: '/patients', label: 'Patients', icon: Users },
-  { path: '/explain', label: 'Explainability', icon: Brain },
-  { path: '/predict', label: 'Predict', icon: Activity },
+  { path: '/', label: 'Home', icon: HomeIcon },
+  { path: '/predict', label: 'Prediction', icon: Activity },
 ];
 
 export default function App() {
@@ -27,7 +23,7 @@ export default function App() {
       }}>
         <div className="container" style={{ maxWidth: '1400px', margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Link to="/" style={{ fontSize: '20px', fontWeight: '700', color: 'var(--color-primary)', textDecoration: 'none' }}>
-            Sepsis Dashboard
+            Sepsis<span className="brand-secondary"> Dashboard</span>
           </Link>
           <nav style={{ display: 'flex', gap: '8px' }}>
             {navigation.map((item) => (
@@ -55,14 +51,12 @@ export default function App() {
         </div>
       </header>
 
-      <main style={{ flex: 1, padding: '24px' }}>
-        <div className="container">
+      <main className="app-main">
+        <div className={`container app-page ${location.pathname === '/predict' ? 'app-page-predict' : 'app-page-home'}`} key={location.pathname}>
           <Routes>
-            <Route path="/" element={<Overview />} />
-            <Route path="/patients" element={<PatientExplorer />} />
-            <Route path="/explain" element={<Explainability />} />
-            <Route path="/explain/:patient_id" element={<Explainability />} />
-            <Route path="/predict" element={<Predict />} />
+            <Route path="/" element={<Home />} />
+            <Route path="/predict" element={<Prediction />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </div>
       </main>
@@ -75,7 +69,7 @@ export default function App() {
         color: 'var(--color-text-muted)',
         fontSize: '13px',
       }}>
-        Sepsis Early Warning System — Built with FastAPI + React + TypeScript
+        Sepsis risk decision support · Use with clinical judgment
       </footer>
     </div>
   );

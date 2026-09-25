@@ -163,7 +163,8 @@ class ModelLoader:
         missing_features = [name for name in self.feature_names if name not in temporal]
         if missing_features:
             raise RuntimeError(f"Temporal pipeline is missing model features: {missing_features[:5]}")
-        return np.asarray([[temporal[name] for name in self.feature_names]], dtype=np.float32)
+        model_features = np.asarray([[temporal[name] for name in self.feature_names]], dtype=np.float32)
+        return np.nan_to_num(model_features, nan=0.0)
 
     @staticmethod
     def _engineer_last_row(processed: pd.DataFrame) -> Dict[str, float]:
@@ -212,7 +213,8 @@ class ModelLoader:
         last = processed.iloc[-1]
         for column in processed.columns:
             if column.endswith("_was_missing") or column in STATIC_FEATURES:
-                result[column] = float(last[column])
+                value = last[column]
+                result[column] = float(value) if pd.notna(value) else np.nan
 
         return result
 
@@ -224,6 +226,27 @@ class ModelLoader:
             logit = np.log(score / (1 - score)).reshape(1, 1)
             return float(self.calibrator.predict_proba(logit)[0, 1])
         return float(self.calibrator.predict([raw_probability])[0])
+
+    def explain_history(self, history: List[Dict[str, Any]], top_n: int = 10) -> List[Dict[str, Any]]:
+        """Return CatBoost SHAP drivers for the exact transformed prediction input."""
+        model = self.models.get("catboost")
+        if model is None or not self.feature_names:
+            raise RuntimeError("CatBoost and selected feature names are required for explanations")
+
+        features = self.preprocess_history(history)
+        shap_values = np.asarray(
+            model.get_feature_importance(Pool(features), type="ShapValues")
+        )[0]
+        contributions = shap_values[:-1]
+        top_indices = np.argsort(np.abs(contributions))[-top_n:][::-1]
+        return [
+            {
+                "feature": self.feature_names[index],
+                "shap_value": float(contributions[index]),
+                "feature_value": float(features[0, index]),
+            }
+            for index in top_indices
+        ]
 
     def predict_ensemble(self, history: List[Dict[str, Any]]) -> Tuple[float, Dict[str, float]]:
         """Return calibrated stacked risk and individual base-model scores."""

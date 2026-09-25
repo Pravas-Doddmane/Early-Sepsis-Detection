@@ -59,7 +59,7 @@ export interface PredictionResponse {
   threshold: number;
   prediction: number;
   true_label: number | null;
-  shap_top_features: any[] | null;
+  shap_top_features: SHAPExplanation[] | null;
   created_at: string;
 }
 
@@ -160,7 +160,7 @@ export const patientsApi = {
 
 export const predictionsApi = {
   create: (data: PredictionRequest) =>
-    api.post<PredictionResponse>('/predictions', data),
+    api.post<PredictionResponse>('/predictions/', data),
 
   getByPatient: (patient_id: string) =>
     api.get<PredictionResponse[]>(`/predictions/patient/${patient_id}`),

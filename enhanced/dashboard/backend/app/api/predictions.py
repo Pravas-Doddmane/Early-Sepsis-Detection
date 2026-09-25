@@ -29,14 +29,9 @@ def create_prediction(
         for hour in request.history
     ]
     prob_sepsis, individual_probs = loader.predict_ensemble(history)
+    shap_features = loader.explain_history(history)
     threshold = loader.get_threshold()
     prediction = int(prob_sepsis >= threshold)
-
-    # Get top SHAP features (simplified - just top individual model features)
-    shap_features = [
-        {"model": k, "probability": v}
-        for k, v in sorted(individual_probs.items(), key=lambda x: -x[1])
-    ]
 
     # Save to database
     db_pred = Prediction(
