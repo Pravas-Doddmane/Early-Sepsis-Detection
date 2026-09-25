@@ -30,18 +30,8 @@ export default function App() {
               <Link
                 key={item.path}
                 to={item.path}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '10px 16px',
-                  borderRadius: 'var(--radius)',
-                  color: location.pathname === item.path ? 'var(--color-primary)' : 'var(--color-text-muted)',
-                  background: location.pathname === item.path ? 'rgba(37, 99, 235, 0.1)' : 'transparent',
-                  fontWeight: 500,
-                  textDecoration: 'none',
-                  transition: 'all 0.2s',
-                }}
+                className={`nav-link${location.pathname === item.path ? ' active' : ''}`}
+                aria-current={location.pathname === item.path ? 'page' : undefined}
               >
                 <item.icon size={18} />
                 {item.label}
@@ -52,7 +42,7 @@ export default function App() {
       </header>
 
       <main className="app-main">
-        <div className={`container app-page ${location.pathname === '/predict' ? 'app-page-predict' : 'app-page-home'}`} key={location.pathname}>
+        <div className={`container app-page ${location.pathname === '/predict' ? 'app-page-predict' : 'app-page-home'}`}>
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/predict" element={<Prediction />} />

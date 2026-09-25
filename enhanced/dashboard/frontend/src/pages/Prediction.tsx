@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  Activity,
   AlertTriangle,
-  ArrowUpRight,
   Check,
   CheckCircle2,
   HelpCircle,
@@ -65,7 +63,9 @@ function getRisk(probability: number, threshold: number) {
   return {
     aboveThreshold,
     label: aboveThreshold ? 'Above threshold' : 'Below threshold',
-    color: aboveThreshold ? 'var(--color-warning)' : 'var(--color-success)',
+    color: probability >= 0.1
+      ? 'var(--risk-red)'
+      : aboveThreshold ? 'var(--risk-amber)' : 'var(--risk-green)',
   };
 }
 
@@ -166,7 +166,6 @@ export default function Prediction() {
     <div className="prediction-page page-enter">
       <header className="page-heading">
         <div>
-          <p className="eyebrow"><Activity size={15} /> PATIENT ASSESSMENT</p>
           <h1>Sepsis risk prediction</h1>
           <p className="page-subtitle">Enter the recent observations through the current ICU hour.</p>
         </div>
@@ -207,8 +206,8 @@ export default function Prediction() {
             </label>
           </div>
 
-          <fieldset className="input-section">
-            <legend>Patient details</legend>
+          <details className="input-section patient-details-section">
+            <summary>Patient details <span className="optional-label">Optional</span></summary>
             <div className="input-grid patient-detail-grid">
               {patientFields.map(field => (
                 <label className="form-group" key={field.key}>
@@ -229,7 +228,7 @@ export default function Prediction() {
                 </label>
               ))}
             </div>
-          </fieldset>
+          </details>
 
           <fieldset className="input-section observation-section">
             <legend>Recent hourly observations</legend>
@@ -290,7 +289,7 @@ export default function Prediction() {
 
           <div className="form-actions">
             <button className="btn btn-primary predict-action" type="button" onClick={runPrediction} disabled={loading || !isReady}>
-              {loading ? <><Loader2 className="loading-icon" size={17} /> Calculating risk…</> : <>Calculate risk <ArrowUpRight size={17} /></>}
+              {loading ? <><Loader2 className="loading-icon" size={17} /> Calculating risk…</> : 'Calculate risk'}
             </button>
             <span className="action-hint">Requires one or more observations for each recent hour.</span>
           </div>
@@ -301,7 +300,6 @@ export default function Prediction() {
             <PredictionResult key={prediction.id} prediction={prediction} />
           ) : (
             <div className="result-empty">
-              <div className="empty-icon"><Activity size={24} /></div>
               <h2>Your assessment will appear here</h2>
               <p>Enter the patient’s recent observations to see the calibrated risk estimate, feature drivers, and review prompts.</p>
             </div>
@@ -341,7 +339,9 @@ function PredictionResult({ prediction }: { prediction: PredictionResponse }) {
   const [temporalImportance, setTemporalImportance] = useState<TemporalImportance[]>([]);
   const probability = Math.min(1, Math.max(0, prediction.prob_sepsis));
   const risk = getRisk(probability, prediction.threshold);
-  const circumference = 2 * Math.PI * 54;
+  const scaleMaximum = 0.1;
+  const markerPosition = Math.min(100, probability / scaleMaximum * 100);
+  const thresholdPosition = Math.min(100, prediction.threshold / scaleMaximum * 100);
   const explanations = (prediction.shap_top_features ?? [])
     .filter(item => typeof item.shap_value === 'number')
     .slice(0, 10);
@@ -361,30 +361,41 @@ function PredictionResult({ prediction }: { prediction: PredictionResponse }) {
   }, []);
 
   return (
-    <div className="result-panel result-enter">
+    <div className="result-panel">
       <section className="result-summary" style={{ '--risk-color': risk.color } as React.CSSProperties}>
-        <p className="result-kicker">CALIBRATED MODEL ESTIMATE</p>
-        <div className="risk-gauge">
-          <svg viewBox="0 0 128 128" role="img" aria-label={`Estimated sepsis risk ${(probability * 100).toFixed(1)} percent`}>
-            <circle className="gauge-track" cx="64" cy="64" r="54" />
-            <circle
-              className="gauge-value"
-              cx="64"
-              cy="64"
-              r="54"
-              style={{ strokeDasharray: circumference, strokeDashoffset: circumference * (1 - probability) }}
-            />
-          </svg>
-          <div className="gauge-label">
-            <strong>{(probability * 100).toFixed(1)}%</strong>
-            <span>estimated risk</span>
+        <div className="result-heading">
+          <div>
+            <p className="result-label">Calibrated model estimate</p>
+            <p className="result-value">{(probability * 100).toFixed(1)}<span>%</span></p>
+          </div>
+          <div className="risk-status" style={{ color: risk.color }}>
+            {risk.aboveThreshold ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+            {risk.label}
           </div>
         </div>
-        <div className="risk-status" style={{ color: risk.color }}>
-          {risk.aboveThreshold ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
-          {risk.label}
+        <div
+          className="risk-scale"
+          role="img"
+          aria-label={`Estimated risk ${(probability * 100).toFixed(1)} percent; decision threshold ${(prediction.threshold * 100).toFixed(2)} percent`}
+          style={{
+            '--risk-position': `${markerPosition}%`,
+            '--threshold-position': `${thresholdPosition}%`,
+          } as React.CSSProperties}
+        >
+          <div className="risk-scale-track">
+            <span className="risk-zone risk-zone-low" style={{ width: `${thresholdPosition}%` }} />
+            <span className="risk-zone risk-zone-watch" style={{ width: `${Math.max(0, 50 - thresholdPosition)}%` }} />
+            <span className="risk-zone risk-zone-high" style={{ width: '50%' }} />
+          </div>
+          <span className="risk-threshold-marker" />
+          <span className="risk-value-marker" style={{ backgroundColor: risk.color }} />
         </div>
-        <p className="threshold-caption">Decision threshold: {(prediction.threshold * 100).toFixed(2)}%</p>
+        <div className="risk-scale-labels" style={{ '--threshold-position': `${thresholdPosition}%` } as React.CSSProperties}>
+          <span>Lower</span>
+          <span className="risk-threshold-label">Threshold {(prediction.threshold * 100).toFixed(2)}%</span>
+          <span>Higher</span>
+        </div>
+        <p className="threshold-caption">Decision threshold is the alert point selected on validation data; it is not a diagnosis.</p>
       </section>
 
       <section className="recommendation-section">
@@ -414,7 +425,7 @@ function PredictionResult({ prediction }: { prediction: PredictionResponse }) {
         </div>
         {explanations.length ? (
           <div className="shap-list">
-            {explanations.map(item => (
+            {explanations.map((item, index) => (
               <div className="shap-row" key={item.feature}>
                 <div className="shap-row-label">
                   <span>{item.feature}</span>
@@ -424,8 +435,11 @@ function PredictionResult({ prediction }: { prediction: PredictionResponse }) {
                 </div>
                 <div className="shap-track">
                   <span
-                    className={item.shap_value >= 0 ? 'shap-bar shap-bar-positive' : 'shap-bar shap-bar-negative'}
-                    style={{ width: `${Math.max(3, Math.abs(item.shap_value) / maxContribution * 100)}%` }}
+                    className={`shap-bar ${item.shap_value >= 0 ? 'shap-bar-positive' : 'shap-bar-negative'}${item.shap_value >= 0 && Math.abs(item.shap_value) / maxContribution > 0.65 ? ' shap-bar-high' : ''}`}
+                    style={{
+                      width: `${Math.max(3, Math.abs(item.shap_value) / maxContribution * 100)}%`,
+                      animationDelay: `${index * 40}ms`,
+                    }}
                   />
                 </div>
               </div>
