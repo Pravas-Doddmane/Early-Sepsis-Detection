@@ -1,5 +1,5 @@
 import { Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
-import { Home as HomeIcon, Activity } from 'lucide-react';
+import { Home as HomeIcon, Activity, ShieldCheck } from 'lucide-react';
 import Home from './pages/Home';
 import Prediction from './pages/Prediction';
 
@@ -51,15 +51,17 @@ export default function App() {
         </div>
       </main>
 
-      <footer style={{
-        background: 'var(--color-surface)',
-        borderTop: '1px solid var(--color-border)',
-        padding: '16px 24px',
-        textAlign: 'center',
-        color: 'var(--color-text-muted)',
-        fontSize: '13px',
-      }}>
-        Sepsis risk decision support · Use with clinical judgment
+      <footer className="app-footer">
+        <div className="footer-content">
+          <div className="footer-metadata">
+            <span>Sepsis Early-Warning System</span>
+            <span>Model: stacked_ensemble_v1</span>
+            <time dateTime="2026-09-26">Last updated: 26 September 2026</time>
+          </div>
+          <p className="footer-disclaimer">
+            <ShieldCheck size={14} /> Clinical decision support only. Not a diagnosis or substitute for clinical judgment.
+          </p>
+        </div>
       </footer>
     </div>
   );

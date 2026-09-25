@@ -9,6 +9,8 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import { explanationsApi, PredictionRequest, PredictionResponse, predictionsApi } from '../api';
+import RiskBand from '../components/RiskBand';
+import ShapBars from '../components/ShapBars';
 
 const vitals = [
   { key: 'HR', label: 'Heart rate', unit: 'bpm', min: 30, max: 200, step: 1 },
@@ -339,13 +341,9 @@ function PredictionResult({ prediction }: { prediction: PredictionResponse }) {
   const [temporalImportance, setTemporalImportance] = useState<TemporalImportance[]>([]);
   const probability = Math.min(1, Math.max(0, prediction.prob_sepsis));
   const risk = getRisk(probability, prediction.threshold);
-  const scaleMaximum = 0.1;
-  const markerPosition = Math.min(100, probability / scaleMaximum * 100);
-  const thresholdPosition = Math.min(100, prediction.threshold / scaleMaximum * 100);
   const explanations = (prediction.shap_top_features ?? [])
     .filter(item => typeof item.shap_value === 'number')
     .slice(0, 10);
-  const maxContribution = Math.max(...explanations.map(item => Math.abs(item.shap_value)), 0.0001);
 
   useEffect(() => {
     let active = true;
@@ -373,28 +371,7 @@ function PredictionResult({ prediction }: { prediction: PredictionResponse }) {
             {risk.label}
           </div>
         </div>
-        <div
-          className="risk-scale"
-          role="img"
-          aria-label={`Estimated risk ${(probability * 100).toFixed(1)} percent; decision threshold ${(prediction.threshold * 100).toFixed(2)} percent`}
-          style={{
-            '--risk-position': `${markerPosition}%`,
-            '--threshold-position': `${thresholdPosition}%`,
-          } as React.CSSProperties}
-        >
-          <div className="risk-scale-track">
-            <span className="risk-zone risk-zone-low" style={{ width: `${thresholdPosition}%` }} />
-            <span className="risk-zone risk-zone-watch" style={{ width: `${Math.max(0, 50 - thresholdPosition)}%` }} />
-            <span className="risk-zone risk-zone-high" style={{ width: '50%' }} />
-          </div>
-          <span className="risk-threshold-marker" />
-          <span className="risk-value-marker" style={{ backgroundColor: risk.color }} />
-        </div>
-        <div className="risk-scale-labels" style={{ '--threshold-position': `${thresholdPosition}%` } as React.CSSProperties}>
-          <span>Lower</span>
-          <span className="risk-threshold-label">Threshold {(prediction.threshold * 100).toFixed(2)}%</span>
-          <span>Higher</span>
-        </div>
+        <RiskBand probability={probability} threshold={prediction.threshold} animate />
         <p className="threshold-caption">Decision threshold is the alert point selected on validation data; it is not a diagnosis.</p>
       </section>
 
@@ -423,31 +400,7 @@ function PredictionResult({ prediction }: { prediction: PredictionResponse }) {
           </div>
           <HelpCircle size={17} aria-label="Positive SHAP values move the CatBoost score toward sepsis; negative values move it away." />
         </div>
-        {explanations.length ? (
-          <div className="shap-list">
-            {explanations.map((item, index) => (
-              <div className="shap-row" key={item.feature}>
-                <div className="shap-row-label">
-                  <span>{item.feature}</span>
-                  <strong className={item.shap_value >= 0 ? 'shap-positive' : 'shap-negative'}>
-                    {item.shap_value >= 0 ? '+' : ''}{item.shap_value.toFixed(3)}
-                  </strong>
-                </div>
-                <div className="shap-track">
-                  <span
-                    className={`shap-bar ${item.shap_value >= 0 ? 'shap-bar-positive' : 'shap-bar-negative'}${item.shap_value >= 0 && Math.abs(item.shap_value) / maxContribution > 0.65 ? ' shap-bar-high' : ''}`}
-                    style={{
-                      width: `${Math.max(3, Math.abs(item.shap_value) / maxContribution * 100)}%`,
-                      animationDelay: `${index * 40}ms`,
-                    }}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="explanation-empty">Feature attribution is not available for this prediction.</p>
-        )}
+        <ShapBars explanations={explanations} animate />
         <p className="explanation-note">
           Positive values move the CatBoost score toward sepsis; negative values move it away. This explains one model in the calibrated ensemble, not a treatment decision.
         </p>
@@ -491,7 +444,6 @@ function PredictionResult({ prediction }: { prediction: PredictionResponse }) {
         </details>
       </section>
 
-      <p className="result-disclaimer">Decision support only. Review alongside the full clinical picture.</p>
     </div>
   );
 }
