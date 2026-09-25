@@ -1,12 +1,4 @@
 import { Link } from 'react-router-dom';
-import RiskBand from '../components/RiskBand';
-import ShapBars from '../components/ShapBars';
-
-const previewExplanations = [
-  { feature: 'HospAdmTime', shap_value: 0.5, feature_value: -3.56 },
-  { feature: 'Temp_max6h', shap_value: -0.178, feature_value: 36.8 },
-  { feature: 'Resp_std3h', shap_value: 0.15, feature_value: 0.0 },
-];
 
 export default function Home() {
   return (
@@ -48,27 +40,6 @@ export default function Home() {
             <div><h3>Review what drove it</h3><p>Feature importance, in plain terms.</p></div>
           </li>
         </ol>
-      </section>
-
-      <section className="home-preview" aria-labelledby="preview-heading">
-        <div className="home-section-heading">
-          <div>
-            <h2 id="preview-heading">A preview of your risk assessment</h2>
-            <p>Illustrative demo values only; this is not a patient result.</p>
-          </div>
-        </div>
-        <div className="home-preview-content">
-          <div className="preview-score">
-            <span>Estimated risk</span>
-            <strong>0.7%</strong>
-            <span className="preview-status preview-status-low">Below threshold</span>
-          </div>
-          <div className="preview-visuals">
-            <RiskBand probability={0.007} threshold={0.0262} />
-            <div className="preview-shap-heading">Feature contributions</div>
-            <ShapBars explanations={previewExplanations} limit={3} />
-          </div>
-        </div>
       </section>
 
       <section className="home-timing" aria-labelledby="timing-heading">
