@@ -1,5 +1,5 @@
 """Pydantic schemas for API request/response validation."""
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
@@ -76,11 +76,24 @@ class HourlyRecordResponse(HourlyRecordBase):
 
 
 # Prediction schemas
+class HourlyFeatureInput(BaseModel):
+    iculos: int = Field(ge=1, le=336)
+    features: Dict[str, Optional[float]]
+
+
 class PredictionRequest(BaseModel):
-    """Request to make a prediction for a patient at a specific hour."""
+    """Request a prediction from a contiguous window of raw hourly measurements."""
     patient_id: str
-    iculos: int
-    features: Dict[str, float]  # Feature name -> value
+    iculos: int = Field(ge=1, le=336)
+    history: List[HourlyFeatureInput] = Field(min_length=1, max_length=12)
+
+    @model_validator(mode="after")
+    def validate_history_window(self):
+        expected_hours = list(range(max(1, self.iculos - 11), self.iculos + 1))
+        actual_hours = [entry.iculos for entry in self.history]
+        if actual_hours != expected_hours:
+            raise ValueError(f"history must contain each consecutive ICU hour: {expected_hours}")
+        return self
 
 
 class PredictionResponse(BaseModel):

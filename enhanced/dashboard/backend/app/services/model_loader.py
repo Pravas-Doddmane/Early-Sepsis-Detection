@@ -4,16 +4,21 @@ import os
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import joblib
 from catboost import CatBoostClassifier, Pool
-import xgboost as xgb
-import lightgbm as lgb
-from sklearn.ensemble import RandomForestClassifier
 
 ENHANCED_DIR = Path(os.environ.get("ENHANCED_DIR", Path(__file__).resolve().parents[4]))
 MODELS_DIR = ENHANCED_DIR / "models"
 EXPERIMENTS_DIR = ENHANCED_DIR / "experiments"
+PROCESSED_DIR = ENHANCED_DIR / "data" / "processed"
+
+BASE_FEATURES = [
+    "HR", "O2Sat", "Temp", "SBP", "MAP", "DBP", "Resp", "FiO2", "pH",
+    "PaCO2", "SaO2", "BUN", "Calcium", "Glucose", "Potassium", "Hct",
+    "Hgb", "WBC", "Platelets",
+]
+STATIC_FEATURES = ["Age", "Gender", "Unit1", "Unit2", "HospAdmTime"]
 
 
 class ModelLoader:
@@ -22,12 +27,20 @@ class ModelLoader:
     def __init__(self):
         self.models: Dict[str, any] = {}
         self.meta_learner = None
-        self.scaler = None
         self.imputer = None
+        self.iqr_capper: Dict[str, Dict[str, float]] = {}
+        self.scalers_standard: Dict[str, Any] = {}
+        self.scalers_robust: Dict[str, Any] = {}
+        self.feature_columns: List[str] = []
+        self.numeric_columns: List[str] = []
+        self.scaler_choice: Dict[str, str] = {}
         self.feature_names: List[str] = []
+        self.calibrator = None
+        self.calibration_type: Optional[str] = None
         self.optimal_threshold = 0.026202020202020202
         self._load_models()
         self._load_preprocessing()
+        self._load_calibrator()
         self._load_threshold()
 
     def _load_models(self):
@@ -67,17 +80,18 @@ class ModelLoader:
     def _load_preprocessing(self):
         """Load preprocessing artifacts."""
         try:
-            self.scaler = joblib.load(MODELS_DIR / "transformers" / "scaler_robust.pkl")
-        except Exception:
-            try:
-                self.scaler = joblib.load(MODELS_DIR / "transformers" / "scalers_robust.pkl")
-            except Exception as e:
-                print(f"Warning: Could not load scaler: {e}")
-
-        try:
-            self.imputer = joblib.load(MODELS_DIR / "transformers" / "imputer_knn.pkl")
+            transformers_dir = MODELS_DIR / "transformers"
+            self.iqr_capper = joblib.load(transformers_dir / "iqr_capper.pkl")
+            self.imputer = joblib.load(transformers_dir / "imputer_mice.pkl")
+            self.scalers_standard = joblib.load(transformers_dir / "scalers_standard.pkl")
+            self.scalers_robust = joblib.load(transformers_dir / "scalers_robust.pkl")
+            with (PROCESSED_DIR / "split_info.json").open() as f:
+                split_info = json.load(f)
+            self.feature_columns = split_info["feature_columns"]
+            self.numeric_columns = split_info["numeric_columns"]
+            self.scaler_choice = split_info["scaler_choice"]
         except Exception as e:
-            print(f"Warning: Could not load imputer: {e}")
+            print(f"Warning: Could not load preprocessing artifacts: {e}")
 
         # Load feature names
         try:
@@ -86,6 +100,14 @@ class ModelLoader:
                 self.feature_names = sel if isinstance(sel, list) else sel.get("final_features", [])
         except Exception as e:
             print(f"Warning: Could not load feature names: {e}")
+
+    def _load_calibrator(self):
+        try:
+            self.calibrator = joblib.load(MODELS_DIR / "calibrator.pkl")
+            with (MODELS_DIR / "calibration_info.json").open() as f:
+                self.calibration_type = json.load(f)["type"]
+        except Exception as e:
+            print(f"Warning: Could not load calibrator: {e}")
 
     def _load_threshold(self):
         """Load optimal threshold."""
@@ -102,67 +124,125 @@ class ModelLoader:
     def get_threshold(self) -> float:
         return self.optimal_threshold
 
-    def preprocess(self, features: Dict[str, float]) -> np.ndarray:
-        """Preprocess input features for prediction."""
-        # Create array in correct feature order
-        X = np.array([[features.get(f, 0.0) for f in self.feature_names]], dtype=np.float32)
+    def preprocess_history(self, history: List[Dict[str, Any]]) -> np.ndarray:
+        """Apply the fitted training transforms and causal features to hourly raw inputs."""
+        required_artifacts = [
+            self.imputer, self.feature_names, self.numeric_columns,
+            self.scalers_standard, self.scalers_robust,
+        ]
+        if any(value is None or value == [] for value in required_artifacts):
+            raise RuntimeError("Model preprocessing artifacts are incomplete")
 
-        # Impute missing (already 0, but imputer may have learned statistics)
-        if self.imputer is not None:
-            try:
-                X = self.imputer.transform(X)
-            except Exception:
-                pass
+        raw_rows = []
+        for item in history:
+            row = {column: item["features"].get(column) for column in self.feature_columns}
+            row["ICULOS"] = item["iculos"]
+            raw_rows.append(row)
+        raw = pd.DataFrame(raw_rows)
 
-        # Scale
-        if self.scaler is not None:
-            try:
-                X = self.scaler.transform(X)
-            except Exception:
-                pass
+        for column, bounds in self.iqr_capper.items():
+            if column in raw:
+                raw[column] = raw[column].clip(bounds["lower"], bounds["upper"])
 
-        return X
+        numeric = raw[self.numeric_columns].copy()
+        for column in self.numeric_columns:
+            numeric[f"{column}_was_missing"] = numeric[column].isna().astype(int)
 
-    def predict_single(self, model_name: str, features: Dict[str, float]) -> float:
-        """Get probability from a single model."""
-        X = self.preprocess(features)
+        imputer_columns = list(self.imputer.feature_names_in_)
+        imputed = self.imputer.transform(numeric.reindex(columns=imputer_columns))
+        processed = pd.DataFrame(imputed, columns=imputer_columns)
 
-        if model_name == "catboost" and "catboost" in self.models:
-            pool = Pool(X)
-            return float(self.models["catboost"].predict_proba(pool)[0, 1])
+        for column in self.numeric_columns:
+            scalers = self.scalers_standard if self.scaler_choice[column] == "standard" else self.scalers_robust
+            processed[column] = scalers[column].transform(processed[[column]]).ravel()
+        for column in STATIC_FEATURES:
+            if column in raw:
+                processed[column] = raw[column].to_numpy()
 
-        model = self.models.get(model_name)
-        if model is not None:
-            if hasattr(model, "predict_proba"):
-                return float(model.predict_proba(X)[0, 1])
-            elif hasattr(model, "predict"):
-                return float(model.predict(X)[0])
+        temporal = self._engineer_last_row(processed)
+        missing_features = [name for name in self.feature_names if name not in temporal]
+        if missing_features:
+            raise RuntimeError(f"Temporal pipeline is missing model features: {missing_features[:5]}")
+        return np.asarray([[temporal[name] for name in self.feature_names]], dtype=np.float32)
 
-        return 0.0
+    @staticmethod
+    def _engineer_last_row(processed: pd.DataFrame) -> Dict[str, float]:
+        """Match the causal feature definitions in enhanced/features/temporal.py."""
+        result: Dict[str, float] = {}
+        row_count = len(processed)
 
-    def predict_ensemble(self, features: Dict[str, float]) -> Tuple[float, Dict[str, float]]:
-        """Get stacked ensemble prediction + individual model probs."""
-        individual_probs = {}
+        for column in BASE_FEATURES:
+            values = processed[column].to_numpy(dtype=float)
+            current = values[-1]
+            result[column] = current
 
-        for name in ["rf", "xgb", "lgbm", "catboost"]:
-            if name in self.models:
-                individual_probs[name] = self.predict_single(name, features)
+            for lag in (1, 3, 6):
+                result[f"{column}_lag{lag}"] = values[-lag - 1] if row_count > lag else np.nan
+            for lag in (1, 3):
+                result[f"{column}_diff{lag}h"] = current - values[-lag - 1] if row_count > lag else np.nan
+            if row_count > 1:
+                previous = values[-2]
+                result[f"{column}_pct_change1h"] = (
+                    (current - previous) / abs(previous) if previous != 0 else 0.0
+                )
+            else:
+                result[f"{column}_pct_change1h"] = np.nan
 
-        # Stack using meta-learner
-        if self.meta_learner is not None and len(individual_probs) == 4:
-            # Order must match training: rf, xgb, lgbm, catboost
-            meta_X = np.array([[
-                individual_probs.get("rf", 0),
-                individual_probs.get("xgb", 0),
-                individual_probs.get("lgbm", 0),
-                individual_probs.get("catboost", 0),
-            ]])
-            ensemble_prob = float(self.meta_learner.predict_proba(meta_X)[0, 1])
-        else:
-            # Fallback: average
-            ensemble_prob = np.mean(list(individual_probs.values())) if individual_probs else 0.0
+            for window in (3, 6, 12):
+                recent = values[-window:]
+                valid = recent[~np.isnan(recent)]
+                result[f"{column}_mean{window}h"] = float(np.mean(valid)) if valid.size else np.nan
+                result[f"{column}_std{window}h"] = (
+                    float(np.std(valid)) if recent.size > 1 and valid.size else np.nan
+                )
 
-        return float(np.clip(ensemble_prob, 0.0, 1.0)), individual_probs
+            recent = values[-6:]
+            valid = recent[~np.isnan(recent)]
+            result[f"{column}_min6h"] = float(np.min(valid)) if valid.size else np.nan
+            result[f"{column}_max6h"] = float(np.max(valid)) if valid.size else np.nan
+
+            for window in (3, 6):
+                recent = values[-window:]
+                valid = recent[~np.isnan(recent)]
+                result[f"{column}_slope{window}h"] = (
+                    float(np.polyfit(np.arange(valid.size), valid, 1)[0])
+                    if valid.size >= 2 else np.nan
+                )
+
+        last = processed.iloc[-1]
+        for column in processed.columns:
+            if column.endswith("_was_missing") or column in STATIC_FEATURES:
+                result[column] = float(last[column])
+
+        return result
+
+    def _calibrate(self, raw_probability: float) -> float:
+        if self.calibrator is None or self.calibration_type is None:
+            raise RuntimeError("The selected model calibrator is unavailable")
+        if self.calibration_type == "platt":
+            score = np.clip(raw_probability, 1e-10, 1 - 1e-10)
+            logit = np.log(score / (1 - score)).reshape(1, 1)
+            return float(self.calibrator.predict_proba(logit)[0, 1])
+        return float(self.calibrator.predict([raw_probability])[0])
+
+    def predict_ensemble(self, history: List[Dict[str, Any]]) -> Tuple[float, Dict[str, float]]:
+        """Return calibrated stacked risk and individual base-model scores."""
+        expected_models = {"rf", "xgb", "lgbm", "catboost"}
+        if set(self.models) != expected_models or self.meta_learner is None:
+            raise RuntimeError("All four base models and the stacking model must be loaded")
+
+        X = self.preprocess_history(history)
+        individual_probs: Dict[str, float] = {}
+        for name in ("rf", "xgb", "lgbm", "catboost"):
+            model_input = Pool(X) if name == "catboost" else X
+            individual_probs[name] = float(self.models[name].predict_proba(model_input)[0, 1])
+
+        meta_input = np.asarray([[
+            individual_probs["rf"], individual_probs["xgb"],
+            individual_probs["lgbm"], individual_probs["catboost"],
+        ]])
+        raw_probability = float(self.meta_learner.predict_proba(meta_input)[0, 1])
+        return float(np.clip(self._calibrate(raw_probability), 0.0, 1.0)), individual_probs
 
     def get_model_metrics(self) -> Dict:
         """Load model metrics from disk."""

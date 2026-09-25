@@ -44,7 +44,10 @@ export interface HourlyRecord {
 export interface PredictionRequest {
   patient_id: string;
   iculos: number;
-  features: Record<string, number>;
+  history: Array<{
+    iculos: number;
+    features: Record<string, number | null>;
+  }>;
 }
 
 export interface PredictionResponse {

@@ -32,13 +32,15 @@ def get_model_metrics():
     # Add stacked ensemble
     if "stacked" in metrics:
         m = metrics["stacked"]
+        threshold_info = metrics.get("threshold", {})
+        calibration_info = metrics.get("calibration", {})
         result.append(ModelMetricsResponse(
             version="stacked_v1",
             name="Stacked Ensemble",
             roc_auc=m.get("roc_auc", 0),
             pr_auc=m.get("pr_auc", 0),
-            threshold=m.get("threshold", 0.5),
-            calibration_type="isotonic",
+            threshold=threshold_info.get("optimal_threshold", m.get("threshold", 0.5)),
+            calibration_type=calibration_info.get("type", "unknown"),
             is_active=True,
             created_at=None
         ))

@@ -2,6 +2,39 @@ import { useState, useEffect } from 'react';
 import { AlertTriangle, CheckCircle, XCircle, Info, Loader2, Stethoscope, Trash2, Plus, Minus } from 'lucide-react';
 import { predictionsApi, metricsApi, PredictionRequest, PredictionResponse, ModelMetrics } from '../api';
 
+const inputFields = [
+  { key: 'HR', label: 'Heart Rate', unit: 'bpm', min: 30, max: 200, step: 1 },
+  { key: 'O2Sat', label: 'O2 Saturation', unit: '%', min: 50, max: 100, step: 1 },
+  { key: 'Temp', label: 'Temperature', unit: '°C', min: 30, max: 42, step: 0.1 },
+  { key: 'SBP', label: 'Systolic BP', unit: 'mmHg', min: 50, max: 250, step: 1 },
+  { key: 'MAP', label: 'Mean Arterial Pressure', unit: 'mmHg', min: 30, max: 150, step: 1 },
+  { key: 'DBP', label: 'Diastolic BP', unit: 'mmHg', min: 20, max: 150, step: 1 },
+  { key: 'Resp', label: 'Respiratory Rate', unit: 'breaths/min', min: 5, max: 50, step: 1 },
+  { key: 'FiO2', label: 'FiO2', unit: 'fraction', min: 0.2, max: 1, step: 0.01 },
+  { key: 'pH', label: 'pH', unit: '', min: 6.5, max: 8, step: 0.01 },
+  { key: 'PaCO2', label: 'PaCO2', unit: 'mmHg', min: 5, max: 150, step: 1 },
+  { key: 'SaO2', label: 'SaO2', unit: '%', min: 50, max: 100, step: 1 },
+  { key: 'BUN', label: 'BUN', unit: 'mg/dL', min: 0, max: 200, step: 0.1 },
+  { key: 'Calcium', label: 'Calcium', unit: 'mg/dL', min: 0, max: 20, step: 0.1 },
+  { key: 'Glucose', label: 'Glucose', unit: 'mg/dL', min: 0, max: 1000, step: 1 },
+  { key: 'Potassium', label: 'Potassium', unit: 'mmol/L', min: 0, max: 12, step: 0.1 },
+  { key: 'Hct', label: 'Hematocrit', unit: '%', min: 0, max: 100, step: 0.1 },
+  { key: 'Hgb', label: 'Hemoglobin', unit: 'g/dL', min: 0, max: 30, step: 0.1 },
+  { key: 'WBC', label: 'White Blood Cells', unit: 'K/µL', min: 0, max: 200, step: 0.1 },
+  { key: 'Platelets', label: 'Platelets', unit: 'K/µL', min: 0, max: 1500, step: 1 },
+];
+
+const staticFields = [
+  { key: 'Age', label: 'Age', min: 0, max: 120, step: 1 },
+  { key: 'Gender', label: 'Gender code', min: 0, max: 1, step: 1 },
+  { key: 'Unit1', label: 'Unit 1 code', min: 0, max: 1, step: 1 },
+  { key: 'Unit2', label: 'Unit 2 code', min: 0, max: 1, step: 1 },
+  { key: 'HospAdmTime', label: 'Hours from hospital admission', min: -1000, max: 1000, step: 1 },
+];
+
+const measurementNames = inputFields.map(field => field.key);
+const staticFeatureNames = staticFields.map(field => field.key);
+
 const getRiskLevel = (prob: number, threshold: number) => {
   if (prob >= 0.5) return { level: 'CRITICAL', color: 'var(--color-danger)', icon: AlertTriangle };
   if (prob >= 0.1) return { level: 'HIGH', color: 'var(--color-warning)', icon: AlertTriangle };
@@ -10,14 +43,24 @@ const getRiskLevel = (prob: number, threshold: number) => {
 };
 
 export default function Predict() {
-  const [features, setFeatures] = useState<Record<string, number>>({});
+  const [hourlyHistory, setHourlyHistory] = useState<Record<number, Record<string, number | null>>>({ 1: {} });
+  const [staticFeatures, setStaticFeatures] = useState<Record<string, number | null>>(
+    Object.fromEntries(staticFeatureNames.map(name => [name, null]))
+  );
   const [patientId, setPatientId] = useState('');
   const [iculos, setIculos] = useState(1);
   const [prediction, setPrediction] = useState<PredictionResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modelMetrics, setModelMetrics] = useState<ModelMetrics[]>([]);
-  const [featureNames, setFeatureNames] = useState<string[]>([]);
+  const [threshold, setThreshold] = useState<number | null>(null);
+  const features = hourlyHistory[iculos] ?? {};
+  const firstRequiredHour = Math.max(1, iculos - 11);
+  const requiredHours = Array.from(
+    { length: iculos - firstRequiredHour + 1 },
+    (_, index) => firstRequiredHour + index
+  );
+  const missingHours = requiredHours.filter(hour => hourlyHistory[hour] === undefined);
 
   useEffect(() => {
     const style = document.createElement('style');
@@ -34,28 +77,28 @@ export default function Predict() {
   }, []);
 
   useEffect(() => {
-    const commonFeatures = [
-      'HospAdmTime', 'Temp_max6h', 'Unit2', 'WBC_max6h', 'BUN_max6h',
-      'Resp_mean12h', 'HR_max6h', 'FiO2_min6h', 'Calcium_min6h', 'SaO2_max6h',
-      'Resp_min6h', 'BUN_min6h', 'FiO2_was_missing', 'SBP_max6h', 'SaO2_std12h',
-      'HR', 'O2Sat', 'Temp', 'MAP', 'Resp', 'SBP', 'DBP', 'Age', 'Gender',
-      'ICULOS', 'HR_mean6h', 'HR_std6h', 'MAP_mean6h', 'Temp_mean6h'
-    ];
-    setFeatureNames(commonFeatures);
-    setFeatures(Object.fromEntries(commonFeatures.map(f => [f, 0])));
-  }, []);
-
-  useEffect(() => {
     metricsApi.getModels().then(res => setModelMetrics(res.data)).catch(console.error);
+    metricsApi.getOverview().then(res => setThreshold(res.data.metrics.threshold)).catch(console.error);
   }, []);
 
-  const handleFeatureChange = (feature: string, value: number) => {
-    setFeatures(prev => ({ ...prev, [feature]: value }));
+  const handleFeatureChange = (feature: string, value: number | null) => {
+    setHourlyHistory(prev => ({
+      ...prev,
+      [iculos]: { ...(prev[iculos] ?? {}), [feature]: value },
+    }));
+  };
+
+  const handleStaticFeatureChange = (feature: string, value: number | null) => {
+    setStaticFeatures(prev => ({ ...prev, [feature]: value }));
   };
 
   const handlePredict = async () => {
     if (!patientId.trim()) {
       setError('Please enter a Patient ID');
+      return;
+    }
+    if (missingHours.length > 0) {
+      setError(`Enter measurements for each required ICU hour. Missing: ${missingHours.join(', ')}.`);
       return;
     }
     setLoading(true);
@@ -64,7 +107,15 @@ export default function Predict() {
       const request: PredictionRequest = {
         patient_id: patientId,
         iculos,
-        features,
+        history: requiredHours.map(hour => ({
+          iculos: hour,
+          features: Object.fromEntries(
+            [...measurementNames, ...staticFeatureNames].map(name => [
+              name,
+              name in staticFeatures ? staticFeatures[name] : hourlyHistory[hour][name] ?? null,
+            ])
+          ),
+        })),
       };
       const res = await predictionsApi.create(request);
       setPrediction(res.data);
@@ -76,33 +127,22 @@ export default function Predict() {
   };
 
   const handleReset = () => {
-    setFeatures(Object.fromEntries(featureNames.map(f => [f, 0])));
+    setHourlyHistory({ 1: {} });
+    setStaticFeatures(Object.fromEntries(staticFeatureNames.map(name => [name, null])));
+    setIculos(1);
     setPrediction(null);
     setError(null);
   };
 
   const risk = prediction ? getRiskLevel(prediction.prob_sepsis, prediction.threshold) : null;
 
-  const keyVitals = [
-    { key: 'HR', label: 'Heart Rate', unit: 'bpm', min: 30, max: 200, step: 1 },
-    { key: 'MAP', label: 'Mean Arterial Pressure', unit: 'mmHg', min: 30, max: 150, step: 1 },
-    { key: 'Temp', label: 'Temperature', unit: '°C', min: 30, max: 42, step: 0.1 },
-    { key: 'Resp', label: 'Respiratory Rate', unit: 'breaths/min', min: 5, max: 50, step: 1 },
-    { key: 'O2Sat', label: 'O2 Saturation', unit: '%', min: 50, max: 100, step: 1 },
-    { key: 'SBP', label: 'Systolic BP', unit: 'mmHg', min: 50, max: 250, step: 1 },
-    { key: 'WBC_max6h', label: 'WBC (max 6h)', unit: 'K/µL', min: 0, max: 100, step: 0.1 },
-    { key: 'BUN_max6h', label: 'BUN (max 6h)', unit: 'mg/dL', min: 0, max: 100, step: 0.1 },
-    { key: 'Lactate', label: 'Lactate', unit: 'mmol/L', min: 0, max: 30, step: 0.1 },
-    { key: 'Creatinine', label: 'Creatinine', unit: 'mg/dL', min: 0, max: 10, step: 0.01 },
-  ];
-
   return (
     <div>
       <div style={{ marginBottom: '24px' }}>
         <h1 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '8px' }}>Sepsis Risk Prediction</h1>
         <p style={{ color: 'var(--color-text-muted)' }}>
-          Enter patient vitals/labs to get real-time sepsis probability from the stacked ensemble.
-          Threshold: <strong>2.62%</strong> (optimized for ≥65% sensitivity).
+          Enter consecutive hourly measurements through the current ICU hour. Threshold:{' '}
+          <strong>{threshold === null ? 'Loading' : `${(threshold * 100).toFixed(2)}%`}</strong>.
         </p>
       </div>
 
@@ -125,22 +165,22 @@ export default function Predict() {
               />
             </div>
             <div className="form-group">
-              <label className="form-label">ICU Hour (ICULOS) *</label>
+              <label className="form-label">Current ICU Hour (ICULOS) *</label>
               <input
                 type="number"
                 className="form-input"
                 min="1"
                 max="336"
                 value={iculos}
-                onChange={e => setIculos(parseInt(e.target.value) || 1)}
+                onChange={e => setIculos(Math.min(336, Math.max(1, parseInt(e.target.value) || 1)))}
               />
             </div>
           </div>
 
           <div style={{ marginBottom: '16px' }}>
-            <label className="form-label">Key Vitals & Labs</label>
+            <label className="form-label">Hourly Measurements · Hour {iculos}</label>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '12px' }}>
-              {keyVitals.map(vital => (
+              {inputFields.map(vital => (
                 <div key={vital.key} className="form-group" style={{ marginBottom: 0 }}>
                   <label className="form-label" style={{ fontSize: '12px' }}>
                     {vital.label} ({vital.unit})
@@ -150,7 +190,8 @@ export default function Predict() {
                       type="button"
                       className="btn btn-secondary"
                       style={{ padding: '8px', width: '36px' }}
-                      onClick={() => handleFeatureChange(vital.key, Math.max(vital.min, (features[vital.key] || 0) - vital.step))}
+                      disabled={features[vital.key] == null}
+                      onClick={() => handleFeatureChange(vital.key, Math.max(vital.min, (features[vital.key] ?? vital.min) - vital.step))}
                     >
                       <Minus size={14} />
                     </button>
@@ -160,15 +201,16 @@ export default function Predict() {
                       min={vital.min}
                       max={vital.max}
                       step={vital.step}
-                      value={features[vital.key] || 0}
-                      onChange={e => handleFeatureChange(vital.key, parseFloat(e.target.value) || 0)}
+                      value={features[vital.key] ?? ''}
+                      onChange={e => handleFeatureChange(vital.key, e.target.value === '' ? null : Number(e.target.value))}
                       style={{ flex: 1 }}
                     />
                     <button
                       type="button"
                       className="btn btn-secondary"
                       style={{ padding: '8px', width: '36px' }}
-                      onClick={() => handleFeatureChange(vital.key, Math.min(vital.max, (features[vital.key] || 0) + vital.step))}
+                      disabled={features[vital.key] == null}
+                      onClick={() => handleFeatureChange(vital.key, Math.min(vital.max, (features[vital.key] ?? vital.min) + vital.step))}
                     >
                       <Plus size={14} />
                     </button>
@@ -177,6 +219,30 @@ export default function Predict() {
               ))}
             </div>
           </div>
+
+          <div style={{ marginBottom: '16px' }}>
+            <label className="form-label">Patient Details</label>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '12px' }}>
+              {staticFields.map(field => (
+                <div key={field.key} className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label" style={{ fontSize: '12px' }}>{field.label}</label>
+                  <input
+                    type="number"
+                    className="form-input"
+                    min={field.min}
+                    max={field.max}
+                    step={field.step}
+                    value={staticFeatures[field.key] ?? ''}
+                    onChange={e => handleStaticFeatureChange(field.key, e.target.value === '' ? null : Number(e.target.value))}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <p style={{ margin: '0 0 16px', color: 'var(--color-text-muted)', fontSize: '13px' }}>
+            Required recent hours: {requiredHours.join(', ')}. Missing lab measurements can be left blank.
+          </p>
 
           <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
             <button
@@ -221,8 +287,7 @@ export default function Predict() {
               <Stethoscope size={48} style={{ marginBottom: '16px', opacity: 0.5 }} />
               <p>Enter patient data and click Predict</p>
               <p style={{ fontSize: '13px', marginTop: '8px' }}>
-                The model uses 152 temporal features. Key vitals above are the most impactful;
-                missing values are imputed automatically.
+                Causal temporal features are built from the entered hourly history. Missing values use the fitted training imputer.
               </p>
             </div>
           )}

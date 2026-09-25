@@ -24,7 +24,11 @@ def create_prediction(
     loader = get_model_loader()
 
     # Get ensemble prediction
-    prob_sepsis, individual_probs = loader.predict_ensemble(request.features)
+    history = [
+        {"iculos": hour.iculos, "features": hour.features}
+        for hour in request.history
+    ]
+    prob_sepsis, individual_probs = loader.predict_ensemble(history)
     threshold = loader.get_threshold()
     prediction = int(prob_sepsis >= threshold)
 

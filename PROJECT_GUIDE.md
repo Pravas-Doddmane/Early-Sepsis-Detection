@@ -73,7 +73,9 @@ C:\PROJECT\
 │   ├── xai/
 │   │   └── explain.py                    # Phase 9: SHAP + LIME
 │   ├── dashboard/
-│   │   └── app.py                        # Phase 10: Streamlit demo
+│   ├── dashboard/
+│   │   ├── backend/                     # FastAPI prediction and data API
+│   │   └── frontend/                    # React + TypeScript dashboard
 │   └── experiments/
 │       ├── final_eval.py                 # Phase 11: Final evaluation
 │       ├── audit_report.md               # Phase 1 output
@@ -223,7 +225,7 @@ This is ~5–10× faster than CPU RandomForest-based Boruta.
 
 ---
 
-### Phase 6: Stacking Ensemble 🔜 NEXT
+### Phase 6: Stacking Ensemble ✅ DONE
 **Script**: `enhanced/stacking/stack.py`
 
 **Meta-learner**: LogisticRegression(C=1.0, `class_weight='balanced'`, max_iter=1000)
@@ -286,18 +288,11 @@ This is ~5–10× faster than CPU RandomForest-based Boruta.
 ---
 
 ### Phase 10: Interactive Dashboard
-**Script**: `enhanced/dashboard/app.py`
-**Run**: `streamlit run enhanced/dashboard/app.py`
-
-**Stack**: Streamlit (simple, fast)
-**Inputs**:
-- Patient ID + ICU hour (from dataset) **OR** Manual vitals entry
-**Outputs**:
-- Risk probability + category (LOW / MODERATE / HIGH)
-- Timeline charts (key vitals over ICU hours)
-- SHAP global importance
-- LIME patient-specific explanation
-- Model metadata panel (version, metrics, threshold)
+**Stack**: FastAPI backend + React/TypeScript frontend
+**Run**: `docker compose up --build` from `enhanced/dashboard/`
+**Prediction inputs**: Patient ID, current ICU hour, and consecutive raw hourly measurements for the recent 12-hour window (or all available hours for early ICU stays).
+**Prediction pipeline**: Train-fitted IQR capping, MICE imputation, per-column scaling, causal temporal feature construction, stacked inference, isotonic calibration, then the validation-selected threshold.
+**Pages**: Overview, patient explorer, explainability, and prediction.
 
 ---
 
@@ -364,10 +359,11 @@ python enhanced/calibration/threshold.py
 python enhanced/xai/explain.py
 
 # 10. Dashboard
-streamlit run enhanced/dashboard/app.py
+cd enhanced/dashboard
+docker compose up --build
 
 # 11. Final eval
-python enhanced/experiments/final_eval.py
+# Phase 11 report generation is pending; use the saved metrics artifacts for now.
 ```
 
 ---
@@ -542,7 +538,7 @@ python enhanced/features/temporal.py
 ---
 
 **Last Updated**: 2026-08-26 (Phase 5 complete — all 4 base models trained)
-**Next Action**: Run Phase 6 stacking ensemble (`enhanced/stacking/stack.py`)
+**Next Action**: Review Phase 11 evaluation outputs and document the alert-burden tradeoff.
 
 
 
@@ -554,7 +550,7 @@ python enhanced/features/temporal.py
 
 ---
 
-## Current Status: Phases 1–8 Complete ✅ | Next: Phase 9 (XAI)
+## Current Status: Phases 1–10 Implemented ✅ | Phase 11 Review Pending
 
 ```
 [✅] 1. Data Audit
@@ -565,8 +561,8 @@ python enhanced/features/temporal.py
 [✅] 6. Stacking Ensemble
 [✅] 7. Probability Calibration
 [✅] 8. Clinical Threshold Selection
-[  ] 9. Explainable AI (SHAP + LIME)      <-- START HERE
-[  ] 10. Interactive Dashboard
+[✅] 9. Explainable AI (SHAP + LIME)
+[✅] 10. Interactive Dashboard (FastAPI + React)
 [  ] 11. Final Evaluation & Reporting
 ```
 
@@ -574,14 +570,14 @@ python enhanced/features/temporal.py
 
 ## Quick Resume
 
-```bash
-cd C:\PROJECT
-python enhanced/xai/explain.py       # Phase 9 — not yet written, needs script
+```powershell
+cd C:\PROJECT\enhanced\dashboard
+docker compose up --build
 ```
 
-If `enhanced/xai/explain.py` doesn't exist yet, that's expected — it hasn't been
-generated. Ask for it (see "How We've Been Working" below) or write it following
-the Phase 9 spec in `PROJECT_GUIDE.md`.
+Run the model pipeline first if its saved artifacts are missing. The dashboard's
+prediction form requires consecutive hourly observations for causal feature
+construction.
 
 ---
 
@@ -678,32 +674,21 @@ the Phase 9 spec in `PROJECT_GUIDE.md`.
 
 ## What's Next
 
-### Phase 9 — Explainable AI
-```bash
-python enhanced/xai/explain.py   # needs to be written
-```
-Spec: SHAP TreeExplainer (global, 500-patient sample + per-patient
-waterfall/force plots) and LIME (per-patient bar charts). Use whichever base
-model has the SHAP-compatible tree structure (CatBoost/XGBoost recommended)
-or explain the stacked prediction via the meta-learner + base model SHAP
-values combined — decide this before writing the script, it changes the
-implementation.
+### Phase 9 — Explainable AI (Completed)
+The SHAP and LIME implementation is in `enhanced/xai/explain.py`; generated
+artifacts are in `enhanced/experiments/xai/`.
 
-### Phase 10 — Dashboard
-```bash
-streamlit run enhanced/dashboard/app.py   # needs to be written
-```
-Inputs: patient ID + ICU hour, or manual vitals entry.
-Outputs: risk probability + LOW/MODERATE/HIGH category, vitals timeline, SHAP
-global importance, LIME local explanation, model metadata.
+### Phase 10 — Dashboard (Implemented)
+Run `docker compose up --build` from `enhanced/dashboard/`. The app uses a
+FastAPI backend and React/TypeScript frontend; manual predictions need
+consecutive hourly raw measurements through the selected ICU hour.
 
 ### Phase 11 — Final Evaluation
-```bash
-python enhanced/experiments/final_eval.py   # needs to be written
-```
-Compare baseline vs enhanced on test set, generate `results_table.csv`,
-figures, `final_report.md`. This is where the alarm-rate/precision tradeoff
-from Phase 8 needs honest discussion, not just headline sensitivity.
+The final report script is not present yet. The saved test metrics are in
+`enhanced/models/stack_test_metrics.json` and
+`enhanced/models/optimal_threshold.json`; external-source metrics are in
+`enhanced/experiments/external_validation_setA_setB.json`. Any final comparison
+must document that the baseline metrics may not use the same held-out split.
 
 ---
 

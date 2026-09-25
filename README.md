@@ -16,7 +16,7 @@ Built with **GPU-accelerated gradient boosting (NVIDIA RTX 4060)**, causal tempo
 | **RandomForest** | 0.7407 | 0.0545 | 6.74% | **0.1071** | 0.0827 | 105.5s | CPU (24 threads) |
 | **LightGBM** | 0.7089 | 0.0415 | 0.00% | 0.0000 | 0.0000 | 3.6s | CPU (Multi-core) |
 
-> 🚀 **Recall improvement**: CatBoost and XGBoost improved patient sensitivity to **64.29%** and **62.11%** (vs 55.25% baseline) while evaluating at standard 0.5 threshold. Phase 6 (Stacking) and Phase 8 (Clinical Threshold Optimization) will further optimize PR-AUC and calibrated decision curves.
+> **Threshold tradeoff**: the calibrated ensemble reaches 65.6% test sensitivity at the selected 0.0262 threshold, with 4.9% precision and 23.9% of hourly records flagged. Report alert burden alongside sensitivity; these results are retrospective and are not clinical validation.
 
 ---
 
@@ -29,12 +29,12 @@ Built with **GPU-accelerated gradient boosting (NVIDIA RTX 4060)**, causal tempo
 | **Phase 3** | Temporal Feature Engineering | ✅ Completed | 309 causal temporal features (lags, diffs, rolling stats, slopes) |
 | **Phase 4** | Hybrid Feature Selection | ✅ Completed | 109 final features selected via GPU-Boruta + Mutual Information |
 | **Phase 5** | 4 Base Model Training | ✅ Completed | XGBoost (GPU), CatBoost (GPU), LightGBM, RandomForest trained & evaluated |
-| **Phase 6** | Stacking Ensemble | 🔜 Next | Logistic Regression meta-learner combining out-of-fold / val predictions |
-| **Phase 7** | Probability Calibration | ⏳ Upcoming | Platt Scaling & Isotonic Regression for clinical risk calibration |
-| **Phase 8** | Clinical Threshold Selection | ⏳ Upcoming | Decision curve analysis (Sensitivity ≥ 80%, Alarm Rate ≤ 20%) |
-| **Phase 9** | Explainable AI (XAI) | ⏳ Upcoming | SHAP TreeExplainer (global/local) & LIME patient explanations |
-| **Phase 10** | Interactive Dashboard | ⏳ Upcoming | Streamlit clinical decision support dashboard |
-| **Phase 11** | Final Evaluation | ⏳ Upcoming | Independent test set evaluation and final report |
+| **Phase 6** | Stacking Ensemble | ✅ Completed | Out-of-fold validation predictions and test ensemble |
+| **Phase 7** | Probability Calibration | ✅ Completed | Isotonic calibration (`calibrator.pkl`) |
+| **Phase 8** | Clinical Threshold Selection | ✅ Completed | Threshold 0.0262; test sensitivity 65.6%, precision 4.9%, hourly alarm rate 23.9% |
+| **Phase 9** | Explainable AI (XAI) | ✅ Completed | SHAP global/temporal importance and SHAP/LIME examples |
+| **Phase 10** | Interactive Dashboard | ✅ Implemented | FastAPI backend, React + TypeScript frontend, Docker Compose |
+| **Phase 11** | Final Evaluation | ⏳ Review pending | Consolidate test and external-validation results into final report |
 
 ---
 
@@ -113,6 +113,16 @@ Outputs saved in `enhanced/models/`:
 - Validation probability predictions: `*_val_preds.npy`
 - Validation metrics: `*_metrics.json`
 
+### Dashboard
+Run from the project root after model and preprocessing artifacts have been generated:
+```powershell
+cd enhanced/dashboard
+docker compose up --build
+```
+- Frontend: http://localhost:5173
+- Backend API: http://localhost:8000/docs
+- Manual predictions require consecutive hourly measurements through the selected ICU hour so causal features match the training pipeline.
+
 ---
 
 ## 📁 Repository Structure
@@ -136,10 +146,10 @@ Early-Sepsis-Detection/
 │   │   ├── train_lgbm.py                 # Phase 5: LightGBM
 │   │   ├── train_rf.py                   # Phase 5: RandomForest
 │   │   └── transformers/                 # Saved preprocessing artifacts (.pkl)
-│   ├── stacking/                         # Phase 6: Stacking ensemble (next)
+│   ├── stacking/                         # Phase 6: Stacking ensemble
 │   ├── calibration/                      # Phase 7 & 8: Calibration & thresholds
 │   ├── xai/                              # Phase 9: SHAP & LIME explainability
-│   ├── dashboard/                        # Phase 10: Streamlit decision app
+│   ├── dashboard/                        # Phase 10: FastAPI + React dashboard
 │   └── experiments/                      # Experiment metrics, plots & reports
 ├── PROJECT_GUIDE.md                      # Comprehensive developer & phase guide
 ├── PROJECT_CONTEXT.md                    # Quick session context
@@ -149,5 +159,5 @@ Early-Sepsis-Detection/
 
 ---
 
-## 🔬 Next Steps: Phase 6
-Proceed to **Phase 6: Stacking Ensemble** to combine predictions from all 4 models into a meta-learner for enhanced discrimination and calibration.
+## 🔬 Next Steps
+Review the final evaluation and document the calibrated model's sensitivity, precision, and hourly alert burden alongside external-validation results.
