@@ -1,0 +1,11 @@
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.env
+*.log
+.DS_Store
+.git
+.gitignore
+README.md
+enhanced_dashboard.db

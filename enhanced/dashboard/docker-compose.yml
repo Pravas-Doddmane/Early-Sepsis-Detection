@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sepsis-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount model artifacts and data for hot reload
+      - ../../enhanced/models:/app/enhanced/models:ro
+      - ../../enhanced/experiments:/app/enhanced/experiments:ro
+      - ../../enhanced/data/processed:/app/enhanced/data/processed:ro
+      # Mount source for development
+      - ./backend/app:/app/app:ro
+    environment:
+      - PYTHONPATH=/app
+      - ENHANCED_DIR=/app/enhanced
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: sepsis-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      - VITE_API_URL=http://localhost:8000/api
+    restart: unless-stopped
+
+  # Optional: Database admin (SQLite browser)
+  # sqlite-browser:
+  #   image: colek42/sqlite-web:latest
+  #   container_name: sepsis-sqlite
+  #   ports:
+  #     - "8080:8080"
+  #   volumes:
+  #     - ../../enhanced_dashboard.db:/data/db.sqlite:ro
+  #   command: --host 0.0.0.0 --port 8080 /data/db.sqlite
+
+networks:
+  default:
+    name: sepsis-network
