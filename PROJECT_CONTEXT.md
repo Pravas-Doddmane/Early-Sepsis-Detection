@@ -92,10 +92,11 @@ On Val (calibrated):
 | SHAP | Local (per patient) | Waterfall/force plot |
 | LIME (TabularExplainer) | Local (per patient) | Bar chart of feature contributions |
 
-### 10. Interactive Dashboard (`enhanced/dashboard/app.py`)
-- Stack: Streamlit
-- Inputs: Patient ID + ICU hour (from dataset) OR Manual vitals entry
-- Outputs: Risk probability + category (LOW/MODERATE/HIGH), Timeline charts, SHAP global importance, LIME patient-specific explanation, Model metadata panel
+### 10. Interactive Dashboard (`enhanced/dashboard/`)
+- Stack: FastAPI backend + React/TypeScript frontend
+- Run with `docker compose up --build` from `enhanced/dashboard/`
+- Manual prediction accepts consecutive raw hourly observations and applies the saved preprocessing, causal temporal feature, calibration, and threshold pipeline.
+- Pages: overview, patients, explainability, and prediction.
 
 ### 11. Final Evaluation (`enhanced/experiments/final_eval.py`)
 Compare Baseline (preserved) vs Enhanced on Test:
@@ -149,10 +150,11 @@ python enhanced/calibration/threshold.py
 python enhanced/xai/explain.py
 
 # 10. Dashboard
-streamlit run enhanced/dashboard/app.py
+cd enhanced/dashboard
+docker compose up --build
 
 # 11. Final eval
-python enhanced/experiments/final_eval.py
+# Phase 11 report generation is pending; use the saved metrics artifacts for now.
 ```
 
 ## Deliverables
@@ -166,6 +168,6 @@ enhanced/
 │   ├── calibration_curves.png
 │   ├── shap_summary.png
 │   └── final_report.md
-├── dashboard/app.py        # Runnable demo
+├── dashboard/              # FastAPI + React dashboard
 └── PROJECT_CONTEXT.md      # Context for next session
 ```

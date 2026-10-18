@@ -1,0 +1,678 @@
+# Project Explanation Guide
+
+## 1. One-Sentence Summary
+
+> This project is a real-time sepsis early-warning system that uses hourly ICU data, temporal feature engineering, machine-learning ensembles, probability calibration, clinical threshold selection, explainable AI, and a web dashboard to estimate a patient’s risk of sepsis.
+
+The project has two major parts:
+
+1. **Machine-learning pipeline:** processes PhysioNet data and trains/evaluates the models.
+2. **Dashboard application:** allows users to explore patients, view metrics, generate predictions, and inspect explanations.
+
+---
+
+## 2. Problem Being Solved
+
+Sepsis can develop rapidly in ICU patients. The objective is not only to determine whether a patient eventually develops sepsis, but to detect risk early using information available at the current ICU hour.
+
+The system receives patient information such as:
+
+- Heart rate
+- Oxygen saturation
+- Temperature
+- Blood pressure
+- Respiratory rate
+- Blood tests
+- Patient age and gender
+- ICU length of stay
+- Hospital admission time
+- Missing-value indicators
+
+The output is:
+
+- Sepsis probability
+- Risk category
+- Whether the probability exceeds the selected clinical threshold
+- Model-level prediction information
+- Explainability information
+
+This is a **screening and early-warning system**, not a replacement for clinical judgment.
+
+---
+
+# 3. Dataset
+
+The project uses the **PhysioNet 2019 Sepsis Challenge dataset**.
+
+The data contains:
+
+- Patient-level ICU records
+- Hourly measurements
+- Vital signs
+- Laboratory values
+- Static patient information
+- A binary `SepsisLabel`
+
+The dataset is highly imbalanced:
+
+- Patient-level sepsis rate: approximately 7.27%
+- Hour-level positive rate: approximately 1.8%
+
+This imbalance is important because a model could achieve high accuracy by predicting “no sepsis” almost all the time. Therefore, accuracy alone is not a suitable metric.
+
+The important metrics are:
+
+- ROC-AUC
+- PR-AUC
+- Sensitivity/recall
+- Specificity
+- Precision
+- F1-score
+- Calibration error
+- Alarm rate
+
+---
+
+# 4. Data Preprocessing
+
+The preprocessing code is mainly located in:
+
+- `preprocessing.py`
+- `preprocessing_fast.py`
+
+## Patient-Level Splitting
+
+Patients are split into:
+
+- 70% training
+- 15% validation
+- 15% testing
+
+The split is performed by **patient**, not by individual rows.
+
+This is important because one patient has many hourly rows. If rows from the same patient appeared in both training and testing, the model could indirectly see information about the test patient during training. That would create data leakage.
+
+## Outlier Handling
+
+The pipeline uses IQR-based capping:
+
+$$
+\text{Lower bound} = Q_1 - 1.5 \times IQR
+$$
+
+$$
+\text{Upper bound} = Q_3 + 1.5 \times IQR
+$$
+
+Values outside those limits are capped.
+
+The limits are learned from the training data and then applied to validation and test data.
+
+## Missing Values
+
+Medical time-series data naturally contains missing values.
+
+The project evaluates:
+
+- KNN imputation
+- MICE-style iterative imputation
+
+Missingness indicators are also created. For example:
+
+- `HR_was_missing`
+- `Temp_was_missing`
+
+The model can therefore learn both:
+
+1. The estimated value.
+2. Whether the original measurement was missing.
+
+---
+
+# 5. Temporal Feature Engineering
+
+The important difference between this project and a simple static model is that it uses the patient’s history over time.
+
+The code is mainly in:
+
+- `temporal.py`
+
+Instead of using only the current heart rate, the system can use features such as:
+
+- Previous heart rate
+- Heart rate one, three, or six hours earlier
+- Recent mean
+- Recent minimum and maximum
+- Recent standard deviation
+- Difference from previous measurements
+- Increasing or decreasing trends
+- Missingness over recent windows
+
+Examples:
+
+- `HR_lag1`
+- `HR_lag3`
+- `HR_mean6h`
+- `MAP_std12h`
+- `Temp_max6h`
+- `Resp_min6h`
+
+This allows the model to detect deterioration, not only abnormal individual values.
+
+The features are designed to be causal: the feature at hour $t$ should only use information available at hour $t$ or earlier.
+
+---
+
+# 6. Feature Selection
+
+The project starts with many temporal and clinical features.
+
+Feature selection uses:
+
+1. Mutual Information
+2. Boruta feature selection
+3. A final selected feature set
+
+The final model uses approximately 150 selected features.
+
+Feature selection helps to:
+
+- Reduce noise
+- Reduce training time
+- Reduce overfitting
+- Make the models easier to interpret
+
+---
+
+# 7. Machine-Learning Models
+
+Four base models are trained:
+
+1. XGBoost
+2. LightGBM
+3. CatBoost
+4. Random Forest
+
+The training scripts are located in:
+
+- `train_xgb.py`
+- `train_lgbm.py`
+- `train_catboost.py`
+- `train_rf.py`
+
+## Why Four Models?
+
+Different algorithms learn different patterns:
+
+- **XGBoost:** strong gradient-boosted tree model
+- **LightGBM:** efficient boosted-tree model
+- **CatBoost:** robust gradient boosting with strong nonlinear modeling
+- **Random Forest:** ensemble of independent decision trees
+
+Combining them can improve robustness compared with depending on a single model.
+
+## Class Imbalance
+
+The positive class is rare, so each model uses mild class weighting.
+
+The full positive-to-negative ratio was approximately 54.65. However, using the full ratio over-corrected the imbalance and reduced precision and PR-AUC.
+
+The project therefore uses approximately:
+
+$$
+\sqrt{54.65} \approx 7.39
+$$
+
+This was tested experimentally and performed better than native full-strength balancing.
+
+This is one of the strongest methodological parts of the project.
+
+---
+
+# 8. Stacking Ensemble
+
+The stacking implementation is in:
+
+- `stack.py`
+
+The four base models each produce a probability:
+
+```text
+Random Forest probability
+XGBoost probability
+LightGBM probability
+CatBoost probability
+```
+
+These four probabilities are passed into a Logistic Regression meta-learner.
+
+The final prediction is:
+
+$$
+P(\text{sepsis}) =
+f(P_{RF}, P_{XGB}, P_{LGBM}, P_{CatBoost})
+$$
+
+where $f$ is the meta-learner.
+
+## Leakage Prevention
+
+A serious validation issue was corrected.
+
+The earlier approach trained the meta-learner on validation predictions and evaluated it on the same validation predictions. That would produce overly optimistic results.
+
+The corrected version uses out-of-fold predictions:
+
+1. Split the training data into folds.
+2. Train base models on part of the data.
+3. Generate predictions for the unseen fold.
+4. Combine all out-of-fold predictions.
+5. Train the meta-learner on those predictions.
+6. Evaluate on separate validation/test data.
+
+This is called **leak-safe stacking**.
+
+---
+
+# 9. Final Model Results
+
+The final reported results are approximately:
+
+| Metric | Enhanced Model |
+|---|---:|
+| ROC-AUC | 0.7838 |
+| PR-AUC | 0.0702 |
+| Sensitivity | 65.6% |
+| Specificity | 76.9% |
+| Precision | 4.9% |
+| Test recall improvement | About 10 percentage points |
+
+Compared with the baseline:
+
+- ROC-AUC improved from approximately 0.7598 to 0.7838.
+- Sensitivity improved from approximately 55.25% to 65.6%.
+- Test PR-AUC remained approximately similar to the baseline.
+
+The honest conclusion is:
+
+> The model clearly improves discrimination and recall, while PR-AUC remains approximately comparable to the baseline because the problem is highly imbalanced.
+
+It is better to present this honestly rather than claiming improvement in every metric.
+
+---
+
+# 10. Probability Calibration
+
+Raw machine-learning probabilities are not always reliable.
+
+For example, a model output of `0.20` should ideally mean that similar cases have approximately a 20% event rate. Calibration makes the probabilities more meaningful.
+
+The project compares:
+
+- Platt scaling
+- Isotonic calibration
+
+Isotonic calibration was selected.
+
+The calibration outputs include:
+
+- Calibrated test probabilities
+- Brier score
+- Expected Calibration Error
+
+The calibration error is approximately 0.0007–0.0009, indicating good agreement between predicted probabilities and observed outcomes.
+
+---
+
+# 11. Clinical Threshold Selection
+
+The default classification threshold is not 50%.
+
+The selected threshold is approximately:
+
+```text
+0.0262 = 2.62%
+```
+
+This may appear low, but sepsis is a rare event. A low threshold is reasonable when the goal is to identify more potentially septic patients.
+
+The threshold was selected using the rule:
+
+> Minimize the alarm rate while maintaining sensitivity of at least 60%.
+
+At the selected threshold:
+
+- Sensitivity is approximately 65.6%.
+- Specificity is approximately 76.9%.
+- Precision is approximately 4.9%.
+- Alarm rate is approximately 23.9%.
+
+This means the system prioritizes catching possible sepsis cases, accepting false alarms as a tradeoff.
+
+You can explain this to your guide as:
+
+> In an early-warning system, missing a patient who may develop sepsis can be more serious than generating additional alerts. Therefore, the threshold is selected around a sensitivity requirement rather than using the default 50% threshold.
+
+---
+
+# 12. Explainable AI
+
+The XAI implementation is in:
+
+- `explain.py`
+- `xai_loader.py`
+
+The project uses:
+
+- SHAP
+- LIME
+
+## Global SHAP
+
+The global SHAP beeswarm plot shows which features are important across many test records.
+
+This answers:
+
+> Which variables generally influence the model?
+
+It is an aggregate explanation, not a single-patient explanation.
+
+## Temporal SHAP
+
+Temporal SHAP divides ICU time into:
+
+- Early: hours 1–6
+- Mid: hours 7–24
+- Late: hour 25 onwards
+
+It calculates feature importance separately for each period.
+
+This answers:
+
+> Does the model rely on different features during different stages of ICU stay?
+
+This is an important project contribution because a static model cannot show how feature importance changes over time.
+
+## Representative TP/TN Explanations
+
+The generated waterfall and LIME plots are:
+
+- One representative true-positive case
+- One representative true-negative case
+
+They are not explanations for every patient.
+
+They are useful as case studies to demonstrate:
+
+- Why the model correctly flagged a septic case.
+- Why the model correctly cleared a non-septic case.
+
+The current dashboard still treats these as representative examples. Truly patient-specific waterfall/LIME image generation is a remaining enhancement.
+
+---
+
+# 13. Backend
+
+The backend is a FastAPI application located under:
+
+- backend app
+
+The main application is:
+
+- `main.py`
+
+The backend provides API endpoints for:
+
+## Patient APIs
+
+- Patient list
+- Patient details
+- Hourly patient records
+- Patient statistics
+
+## Prediction APIs
+
+- Submit patient features
+- Generate ensemble prediction
+- Return probability
+- Return threshold
+- Return risk classification
+- Store prediction in SQLite
+
+## Metrics APIs
+
+- Model performance metrics
+- Overview metrics
+- External validation metrics
+- Feature importance data
+
+## Explanation APIs
+
+- Patient SHAP values
+- Patient LIME values
+- Global SHAP importance
+- Temporal SHAP importance
+- Waterfall image files
+- LIME image files
+- Full beeswarm image
+- Full temporal importance image
+
+The database uses SQLite and stores prediction history.
+
+---
+
+# 14. Frontend
+
+The frontend is a React and TypeScript application located in:
+
+- frontend source
+
+The main pages are:
+
+## Overview
+
+Displays:
+
+- ROC-AUC
+- PR-AUC
+- Sensitivity
+- Specificity
+- Precision
+- F1-score
+- MCC
+- Threshold
+- Calibration error
+- External validation results
+- Global feature importance
+- Temporal feature importance
+- Data-quality checks
+- Pipeline-quality checks
+
+## Patient Explorer
+
+Allows the user to:
+
+- Browse patients
+- Search patients
+- Filter sepsis patients
+- View demographics
+- View sepsis status
+- View onset information
+- View hourly records
+- Open patient details
+- Navigate to explainability
+
+## Explainability
+
+Displays:
+
+- Global feature importance
+- Temporal importance shift
+- SHAP waterfall examples
+- LIME examples
+- Full-resolution plot previews
+
+The TP/TN examples are clearly labelled as representative cases.
+
+## Prediction
+
+Allows the user to enter:
+
+- Patient ID
+- ICU hour
+- Heart rate
+- MAP
+- Temperature
+- Respiratory rate
+- Oxygen saturation
+- Blood pressure
+- WBC
+- BUN
+- Lactate
+- Creatinine
+
+The page returns:
+
+- Sepsis probability
+- Risk category
+- Threshold
+- ICU hour
+- Ensemble model scores
+- Clinical action guidance
+- Model performance information
+
+The probability gauge has been corrected to display a valid 0–100% range.
+
+---
+
+# 15. Deployment
+
+The project supports Docker deployment using:
+
+- `docker-compose.yml`
+
+There are two containers:
+
+1. **Backend container**
+   - Runs FastAPI and Uvicorn
+   - Loads models and data
+   - Serves API endpoints
+
+2. **Frontend container**
+   - Builds the React application
+   - Serves it with Nginx
+   - Proxies `/api` requests to the backend
+
+For local development:
+
+```bash
+cd enhanced/dashboard/backend
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+```
+
+Then run the frontend:
+
+```bash
+cd enhanced/dashboard/frontend
+npm run dev
+```
+
+The frontend development server uses Vite and proxies API calls to the backend.
+
+---
+
+# 16. End-to-End Flow
+
+The complete flow is:
+
+```mermaid
+flowchart TD
+    A[PhysioNet ICU Data] --> B[Patient-Level Split]
+    B --> C[Cleaning and Outlier Capping]
+    C --> D[Missing Value Handling]
+    D --> E[Temporal Feature Engineering]
+    E --> F[Feature Selection]
+    F --> G[XGBoost]
+    F --> H[LightGBM]
+    F --> I[CatBoost]
+    F --> J[Random Forest]
+    G --> K[Stacking Meta-Learner]
+    H --> K
+    I --> K
+    J --> K
+    K --> L[Probability Calibration]
+    L --> M[Clinical Threshold]
+    M --> N[Risk Prediction]
+    N --> O[FastAPI Backend]
+    O --> P[React Dashboard]
+    I --> Q[SHAP and LIME]
+    Q --> P
+```
+
+---
+
+# 17. Strong Points to Tell Your Guide
+
+You can highlight these contributions:
+
+1. **Patient-level splitting prevents leakage.**
+2. **Temporal features capture patient deterioration.**
+3. **Four different models are combined using stacking.**
+4. **The stacking meta-learner uses out-of-fold predictions.**
+5. **Class imbalance was experimentally studied instead of using default balancing blindly.**
+6. **Predictions are calibrated rather than treated as raw model scores.**
+7. **The decision threshold is selected according to a sensitivity requirement.**
+8. **Global and temporal explainability are included.**
+9. **The system has a complete backend and frontend rather than only offline model files.**
+10. **The final evaluation reports both improvements and limitations honestly.**
+
+---
+
+# 18. Limitations to Disclose
+
+Be transparent about these points:
+
+- PR-AUC did not significantly exceed the baseline on the final test set.
+- Precision is low because sepsis is a rare event.
+- The system produces false alarms in exchange for higher sensitivity.
+- The dashboard is a research prototype, not a clinical deployment.
+- The current TP/TN waterfall and LIME images are representative examples.
+- Truly patient-specific visual SHAP/LIME plots are not fully implemented in the frontend yet.
+- The prediction page uses manually entered features and defaults missing fields to zero.
+- External validation is shown in the project outputs, but a fully independent hospital-system validation would strengthen the work.
+- SIRS/qSOFA features were considered but are not yet fully implemented.
+
+---
+
+# 19. Short Presentation Script
+
+You can explain the project like this:
+
+> Our project is an early-warning system for sepsis using hourly ICU data from the PhysioNet 2019 dataset. We first split the data at the patient level to prevent information leakage. We then handle outliers and missing values, and create temporal features such as previous values, rolling statistics, trends, and missingness indicators.  
+>
+> We train four machine-learning models: XGBoost, LightGBM, CatBoost, and Random Forest. Their outputs are combined using a logistic-regression stacking model trained with out-of-fold predictions, which avoids validation leakage. Because sepsis is highly imbalanced, we use mild class weighting rather than full automatic balancing.  
+>
+> After training, we calibrate the probabilities and select a threshold of 2.62% based on maintaining at least 60% sensitivity. The final model reaches approximately 65.6% sensitivity, 76.9% specificity, and 0.7838 ROC-AUC on the test set.  
+>
+> We also add SHAP and LIME explainability. Global SHAP shows which features are important overall, while temporal SHAP shows how feature importance changes during early, middle, and late ICU stay.  
+>
+> Finally, we built a FastAPI backend and React frontend. The dashboard includes overview metrics, patient exploration, explainability plots, and an interactive prediction page. The system is intended as a research prototype for early warning and model interpretation, not as an autonomous clinical decision-maker.
+
+
+
+For a demo negative/no-sepsis prediction, use stable example values:
+
+Field	Value
+Patient ID	demo-negative-001
+ICU Hour	1
+Heart Rate	72 bpm
+MAP	85 mmHg
+Temperature	36.8 °C
+Respiratory Rate	16
+O2 Saturation	98%
+Systolic BP	120 mmHg
+WBC	7.0
+BUN	14 mg/dL
+Lactate	1.0 mmol/L
+Creatinine	0.9 mg/dL
+Click Predict Sepsis Risk. These should ge

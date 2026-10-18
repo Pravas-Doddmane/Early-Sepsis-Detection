@@ -1,0 +1,13 @@
+section,split,method,brier,ece,threshold,sensitivity,precision,f1,alarm_rate,training_rate,expected_brier
+calibration,test,Constant predictor (train rate),0.017581800693448682,6.677141239381373e-05,,,,,,0.017969059568650633,0.01764617246686892
+calibration,test,Raw stacked scores,0.017206641457501167,0.0018389064957960895,,,,,,,
+calibration,test,Platt (correct refit; full val),0.017209164238715956,0.001931961380032304,,,,,,,
+calibration,test,Isotonic (full val),0.017103017025337813,0.0008976121688603212,,,,,,,
+calibration,validation_half_B,Raw stacked scores,0.017906339065051822,0.001744235605448546,,,,,,,
+calibration,validation_half_B,Platt (fit on half A),0.017902029515445755,0.0020560186897271974,,,,,,,
+calibration,validation_half_B,Isotonic (fit on half A),0.01790367454697388,0.0010242984840170988,,,,,,,
+calibration,test,Raw stacked scores,0.017206641457501167,0.0018389064957960895,,,,,,,
+calibration,test,Platt (fit on half A),0.01719700484368412,0.002189003560149244,,,,,,,
+calibration,test,Isotonic (fit on half A),0.017091533881979516,0.0010004933063989306,,,,,,,
+threshold,test,Calibrated (Platt (fit on half A)),,,0.01,0.8864994026284349,0.029709233886143965,0.05749174815205095,0.5341897343103662,,
+threshold,test,Uncalibrated raw scores,,,0.5,0.00023894862604540023,0.08333333333333333,0.0004765308553728854,5.13327258960769e-05,,
