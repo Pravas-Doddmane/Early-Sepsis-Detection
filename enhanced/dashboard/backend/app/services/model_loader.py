@@ -74,6 +74,8 @@ class ModelLoader:
         # Meta-learner (stacking)
         try:
             self.meta_learner = joblib.load(MODELS_DIR / "meta_learner.pkl")
+            if not hasattr(self.meta_learner, "multi_class"):
+                self.meta_learner.multi_class = "auto"
         except Exception as e:
             print(f"Warning: Could not load meta-learner: {e}")
 

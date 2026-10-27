@@ -147,7 +147,7 @@
 
 ## Recommendations for Preprocessing
 1. **Imputation Strategy**: Use MICE/KNN/MissForest benchmark; vitals vs labs may need different approaches
-2. **Outlier Handling**: IQR capping (1.5×IQR) fitted on training patients only
+2. **Outlier Handling**: IQR capping (1.5Ã—IQR) fitted on training patients only
 3. **Normalization**: RobustScaler for skewed lab distributions; StandardScaler for vitals
 4. **Feature Engineering**: Focus on variables with <50% missingness for temporal features
 7. **Patient-Level Split**: Ensure no patient appears in multiple splits

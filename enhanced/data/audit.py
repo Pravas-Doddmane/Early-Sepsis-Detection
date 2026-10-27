@@ -245,13 +245,17 @@ def main():
     print("=" * 60)
 
     # Load all data
-    print("\n[1/4] Loading all patient files...")
-    df = load_all_patients(DATA_DIR)
+    print("\n[1/4] Loading patient data...")
+    raw_parquet = OUTPUT_DIR / "raw_combined.parquet"
+    if raw_parquet.exists():
+        print(f"Loading cached {raw_parquet}...")
+        df = pd.read_parquet(raw_parquet)
+    else:
+        df = load_all_patients(DATA_DIR)
+        # Save raw combined for reference
+        df.to_parquet(raw_parquet, index=False)
+        print(f"Saved raw combined to {raw_parquet}")
     print(f"Loaded {len(df):,} records from {df['patient_id'].nunique():,} patients")
-
-    # Save raw combined for reference
-    df.to_parquet(OUTPUT_DIR / "raw_combined.parquet", index=False)
-    print(f"Saved raw combined to {OUTPUT_DIR}/raw_combined.parquet")
 
     # Patient-level stats
     print("\n[2/4] Computing patient-level statistics...")
@@ -268,10 +272,10 @@ def main():
     report = generate_report(df, patient_stats, var_stats)
 
     report_path = OUTPUT_DIR / "audit_report.md"
-    with open(report_path, 'w') as f:
+    with open(report_path, 'w', encoding='utf-8') as f:
         f.write(report)
 
-    print(f"\n✓ Audit complete!")
+    print(f"\n[OK] Audit complete!")
     print(f"  - Report: {report_path}")
     print(f"  - Patient stats: {OUTPUT_DIR}/patient_stats.csv")
     print(f"  - Variable stats: {OUTPUT_DIR}/variable_stats.csv")
